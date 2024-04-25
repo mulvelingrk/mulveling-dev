@@ -45,7 +45,7 @@ global class SOQLContext {
 
     // "System Mode" sharing applies "without sharing" on query execution:
     global SOQLContext systemSharing() {
-        this.sharingModel = new RKShare.WithPlatformSharing();
+        this.sharingModel = new RKShare.WithoutPlatformSharing(null);
         return this;
     }
 
