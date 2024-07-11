@@ -92,7 +92,7 @@ public with sharing class RKSecurity {
         resetSecurityLog(false);
     }
 
-    private static void resetSecurityLog(Boolean internalCall) {
+    public static void resetSecurityLog(Boolean internalCall) { //Raghil: Changed from private to public
         //if (SecurityMode <= FILTER_FLS_CRUD || internalCall == true && SecurityMode == ALL_OR_NONE_TRANSACTIONAL) {
         if (SecurityMode <= FILTER_FLS_CRUD || internalCall == true && SecurityModeTransactional == true) {
             return;
@@ -119,13 +119,13 @@ public with sharing class RKSecurity {
         resetSecurityLog(false);
     }
 
-    final static Integer ACCESS_READ = 1;
-    final static Integer ACCESS_CREATE = 2;
-    final static Integer ACCESS_UPDATE = 4;
-    final static Integer ACCESS_DELETE = 8;
+    public final static Integer ACCESS_READ = 1; //Raghil: Changed from private to public
+    public final static Integer ACCESS_CREATE = 2; //Raghil: Changed from private to public
+    public final static Integer ACCESS_UPDATE = 4; //Raghil: Changed from private to public
+    public final static Integer ACCESS_DELETE = 8; //Raghil: Changed from private to public
 
     @TestVisible
-    private static void logSecurityMiss(Schema.sObjectType sobjType, Integer accessType) {
+    public static void logSecurityMiss(Schema.sObjectType sobjType, Integer accessType) { //Raghil: Changed from private to public
         if (SecurityMode <= FILTER_FLS_CRUD) {
             return;
         }
@@ -137,7 +137,7 @@ public with sharing class RKSecurity {
     }
 
     @TestVisible
-    private static void logSecurityMiss(Schema.sObjectType sobjType, Schema.sObjectField field, Integer accessType) {
+    public static void logSecurityMiss(Schema.sObjectType sobjType, Schema.sObjectField field, Integer accessType) { //Raghil: Changed from private to public
         if (SecurityMode <= FILTER_FLS_THROW_CRUD) { //FILTER_FLS_CRUD) {
             return;
         }
@@ -156,7 +156,7 @@ public with sharing class RKSecurity {
         throwSecurityViolations(false);
     }
 
-    private static void throwSecurityViolations(Boolean internalCall) {
+    public static void throwSecurityViolations(Boolean internalCall) { //Raghil: Changed from private to public
         //if (SecurityMode <= FILTER_FLS_CRUD || internalCall == true && SecurityMode == ALL_OR_NONE_TRANSACTIONAL) {
         if (SecurityMode <= FILTER_FLS_CRUD || internalCall == true && SecurityModeTransactional == true) {
             return;
@@ -327,7 +327,9 @@ public with sharing class RKSecurity {
 /* mulveling-dev
             String qualifiedName = '' + Schema.Template_Question__c.sObjectType;
 */
-            String qualifiedName = '' + Schema.Audio_Component__c.sObjectType;
+            //String qualifiedName = '' + Schema.Audio_Component__c.sObjectType;
+
+           String qualifiedName = '' + Schema.RKUX_Mock_Object__c.sObjectType; 
 
             Matcher m = NamespaceQualifiedObjFieldPatt.matcher(qualifiedName);
             if (m.matches()) {
@@ -1716,6 +1718,67 @@ public with sharing class RKSecurity {
         }
     }
 
+    // !! NEW: Trying out SOQLParser *-selector functionality:
+    public static Map<String, PathPart> selectStarLogic(Boolean isSafeMode, Schema.sObjectType sobjType) {
+        String[] sels = new String[]{};
+        Schema.DescribeSObjectResult sobjDesc = sobjType.getDescribe();
+        Schema.RecordTypeInfo[] recTypes = sobjDesc.getRecordTypeInfos();
+        Boolean hasRecordTypes = recTypes.size() > 0;
+        if (recTypes.size() == 1 && recTypes[0].getDeveloperName() == 'Master') {
+            hasRecordTypes = false;
+        }
+        if (hasRecordTypes) {
+            sels.addAll(new String[]{ 'RecordTypeId', 'RecordType.DeveloperName', 'RecordType.Name' });
+        }
+        Boolean isCustomObj = sobjDesc.isCustom();
+        if (isCustomObj) {
+            sels.addAll(new String[]{ 'Name', 'CreatedDate' });
+        } else {
+            switch on ('' + sobjType) {
+                when 'Contact' {
+                    sels.addAll(new String[]{ 
+                        'RecordTypeId', 'RecordType.DeveloperName', 'Name', 'Email', 'Birthdate', 'AccountId', 'Account.Name',
+                        'Department', 'Description', 'FirstName', 'LastName', 'GenderIdentity', 'Title', 
+                        'MailingAddress', 'MailingCountry', 'MailingPostalCode' });
+                }
+                when 'AsyncApexJob' {
+                    sels.addAll(new String[]{ 
+                        'Status', 'ExtendedStatus', 'JobType', 'JobItemsProcessed', 'TotalJobItems', 
+                        'CompletedDate', 'MethodName', 'NumberOfErrors', 'ParentJobId', 'CronTriggerId',
+                        'ApexClassId', 'ApexClass.Name', 'ApexClass.NamespacePrefix' });
+                }
+                // TODO: more standard objects we'll want to support...
+            }
+        }
+        // TODO: do Custom Metadata objects require special handling?
+        for (Schema.SObjectField fieldTok : sobjDesc.fields.getMap().values()) {
+            Schema.DescribeFieldResult fieldDesc = fieldTok.getDescribe();
+            if (fieldDesc.isCustom() && fieldDesc.getType() != Schema.DisplayType.BASE64) {
+                sels.add(fieldDesc.getName());
+            }
+        }
+        
+        if (isSafeMode) {
+            // !! Since caller is not explicitly specifying the fields expanded by a "*" selector, safe mode should 
+            // temporarily switch into FILTER mode rather than THROW, for handling insufficient access on expanded 
+            // fields (access being relative to the current ExecutionContext). In other words, if an expanded field 
+            // doesn't have access, if should be silently excluded from the resuling expansion list rather than 
+            // throwing a security exception:
+            SecuritySavepoint sp = new SecuritySavepoint(); 
+            try {
+                resetSecurityLog(true);
+                setSecurityMode(FILTER_FLS_CRUD);
+                return selectMapLogic(isSafeMode, false, sobjType, sels, null);
+            } finally {
+                // !! always restore the original security mode settings and security logs (accumulates field 
+                // access violations):
+                restore(sp);
+            }
+        } else {
+            return selectMapLogic(isSafeMode, false, sobjType, sels, null);
+        }
+    }
+
     public static String getSafePath(Schema.sObjectType sobjType, String rawPath) {
         if (String.isNotBlank(rawPath) && ReadChecker.checkCRUD(sobjType)) {
             String[] rawPathParts = rawPath.split('\\.');
@@ -2174,6 +2237,10 @@ public with sharing class RKSecurity {
                     break;
                 } else {
                     currentPart.fieldDesc = field.getDescribe();
+                    //if (currentPart.fieldDesc == null) {
+                    //    Assert.fail(
+                    //            'Identifier ' + lexRaw + ' could not resolve from SObjectField to FieldDescribResult on ' + currentPart.holder);
+                    //}
                     break;
                 }
                 // unreachable...
@@ -3370,4 +3437,243 @@ public with sharing class RKSecurity {
 
         return childRel;
     }
+    
+    //Added by Raghil
+    public static final Vobj.SchemaDesc DefaultSchema = Vobj.getSchema(null, Schema.RKUX_Mock_Object__c.sObjectType);
+    private static Vobj.SchemaDesc[] SchemaStack;
+    private static Integer SchemaStackTop = 0;
+    private static Integer SchemaStackLen;
+    static {
+        SchemaStack = new Vobj.SchemaDesc[]{ DefaultSchema, null, null, null, null };
+        SchemaStackLen = SchemaStack.size();
+    }
+    
+    public static void setSchema(Vobj.SchemaDesc schemaToEnact) {
+        if (++SchemaStackTop == SchemaStackLen) {
+            SchemaStack.add(schemaToEnact);
+            SchemaStackLen++;
+        } else {
+            SchemaStack[SchemaStackTop] = schemaToEnact;
+        }
+    }
+    
+    public static void revertSchema() {
+        if (--SchemaStackTop < 0) {
+            SchemaStackTop = 0;
+        }
+    }
+
+    public static Vobj.SchemaDesc getActiveSchema() {
+        return SchemaStack[SchemaStackTop];
+    }
+    
+    public static String getNamespace(Schema.sObjectType packageObject) {
+        String qualifiedName = '' + packageObject;
+        Matcher m = NamespaceQualifiedObjFieldPatt.matcher(qualifiedName);
+        if (m.matches()) {
+            return m.group(1);
+        }
+        return null;
+    }
+    
+    public static Map<String, Object> filterSObject(Vobj.SchemaDesc V, SObject record) {
+        resetSecurityLog(true);
+        Map<String, Object> res = filterSObject(V, record, new Id[]{});
+        throwSecurityViolations(true);
+        return res;
+    }
+    
+    private static Map<String, Object> filterSObject(Vobj.SchemaDesc V, SObject record, Id[] refStack) {
+        return filterSObject(V, record, refStack, null);
+    }
+    
+    private static Map<String, Object> filterSObject(Vobj.SchemaDesc V, SObject record, Id[] refStack, RKSecurity.DataMirrorMode dataMirrorMode) {
+        if (record.Id != null) {
+            Integer refRepCount = 0;
+            for (Id refId : refStack) {
+                if (refId == record.Id) {
+                    if (++refRepCount > 1) {
+                        return new Map<String, Object>{ 'Id' => record.Id };
+                    }
+                }
+            }
+        }
+        Integer stackTop = refStack.size();
+        // if we got a non-null SchemaDesc argument this call, and this is the root call (i.e. not recursive), then set it:
+        final Boolean enactSchemaDesc = V != null; //stackTop == 0 && V != null;
+        if (enactSchemaDesc) {
+            RKSecurity.setSchema(V);
+        } else {
+            V = SchemaStack[SchemaStackTop];
+        }
+        Map<String, Object> normalizedFields = new Map<String, Object>();
+        try {
+            final String maskingNamespace = V.maskingNamespace;
+            // Push this record Id onto the reference stack
+            refStack.add(record.Id);
+            //final String packageNamespace = ActiveMaskingNamespace; //getPackageNamespace();
+            Map<String, Object> recordFields = record.getPopulatedFieldsAsMap();
+            for (String fieldName : recordFields.keySet()) {
+                // inline logic from stripThisNamespace() to parse out an explicit namespace from the base API name:
+                Matcher m = ObjFieldPatt.matcher(fieldName);
+                String entityNamespace;
+                //String strippedFieldName = fieldName;
+                String pkgUnqualifiedName = fieldName;
+                String checkPackageMaskingEntity;
+                if (m.matches()) {
+                    entityNamespace = m.group(1);
+                    // if this entity carries an explicit namespace that matches the package namespace, then derive the base API name and store this into
+                    // `strippedFieldName`: 
+                    if (String.isNotBlank(entityNamespace) && maskingNamespace != null && entityNamespace == maskingNamespace) {
+                        pkgUnqualifiedName = m.group(2);
+                    }
+                    // if this entity carries no explicit namespace (i.e. org deafult namespace), then we check to see if there is a package version with the same
+                    // base API name; in that case the latter package entity will "mask" the local non-namespaced entity in order to fully replicate the behavior
+                    // of dynamic Apex (Database.query, sObject.get/put) running in package code:
+                    if (String.isBlank(entityNamespace) && maskingNamespace != null) {
+                        checkPackageMaskingEntity = maskingNamespace + '__' + fieldName;
+                    }
+                }
+                Object fieldValue = recordFields.get(fieldName);
+                Object qualifiedFieldValue, unqualifiedFieldValue;
+                
+                // Could use pattern matching for __r vs __c here to detect fields/child rels,
+                // but that would require additional edge case checking for child rels on standard lookup fields.
+                // Erred on the side of dynamic type checking instead to handle all cases in one go.
+                Boolean pkgUnqualifiedOnly = false;
+                if (fieldValue instanceof List<SObject>) {
+                    // First step, attempt to retrieve the ChildRel definition via direct matching
+                    Schema.ChildRelationship childRel = resolveChildRel(record.getSObjectType(), fieldName);
+
+                    // Second step, check if there is a matching child rel definition on the target record that resides under
+                    // the masking namespace
+                    if (checkPackageMaskingEntity != null && resolveChildRel(record.getSObjectType(), checkPackageMaskingEntity) != null) {
+                        continue;
+                    }
+
+                    // Check for read access on related object
+                    if (!ReadChecker.checkCRUD(childRel.getChildSObject())) {
+                        continue;
+                    }
+
+                    // Check for read access on lookup field (on child)
+                    if (!ReadChecker.checkFLS(childRel.getChildSObject(), childRel.getField().getDescribe().getName())) {
+                        continue;
+                    }
+
+                    // Make sure the original child rel list is normalized as well
+                    //pkgUnqualifiedOnly = !FilterSObject_NSMirrorChildAndParentRels;
+                    //fieldValue = filterSObject((List<SObject>) fieldValue, refStack);
+
+                    if (dataMirrorMode == null || dataMirrorMode == RKSecurity.DataMirrorMode.Qualified) {
+                        // recursive calls will pull from SchemaDesc from SchemaStack[SchemaStackTop]:
+                        qualifiedFieldValue = filterSObject(null, (List<SObject>) fieldValue, refStack, RKSecurity.DataMirrorMode.Qualified);
+                    }
+                    if (dataMirrorMode == null || dataMirrorMode == RKSecurity.DataMirrorMode.UnQualified) {
+                        // recursive calls will pull from SchemaDesc from SchemaStack[SchemaStackTop]:
+                        unqualifiedFieldValue = filterSObject(null, (List<SObject>) fieldValue, refStack, RKSecurity.DataMirrorMode.UnQualified);
+                    }
+                } else if (fieldValue instanceof SObject) {
+                    // Ensure read access on lookup field
+                    String lkp = fieldName.replaceFirst('__r$', '__c');
+                    if (!lkp.endsWith('__c')) {
+                        lkp = lkp + 'Id';
+                    }
+                    if (!ReadChecker.checkFLS(record.getSObjectType(), lkp)) {
+                        continue;
+                    }
+                    // Check for a masking lookup in the package:
+                    if (checkPackageMaskingEntity != null && 
+                            getCachedField(record.getSObjectType(), maskingNamespace + '__' + lkp) != null) {
+                        continue;
+                    }
+
+                    // Ensure read access on related object/s
+                    //String[] relatedTypes = DescribeHandler.getReferenceTo(String.valueOf(record.getSObjectType()), fieldName);
+                    // TODO - review:
+                    Schema.sObjectType[] relatedTypes = resolveFieldOrThrow(record.getSObjectType(), lkp).getDescribe().getReferenceTo();
+
+                    // Replace with labeled loop?
+                    Boolean hasAccessToAll = true;
+                    //for (String relatedType : relatedTypes) {
+                    for (Schema.sObjectType relatedType : relatedTypes) {
+                        //if (!ReadChecker.checkCRUD(DescribeHandler.getSObjectType(relatedType))) {
+                        if (!ReadChecker.checkCRUD(relatedType)) {
+                            hasAccessToAll = false;
+                            break;
+                        }
+                    }
+                    if (!hasAccessToAll) {
+                        continue;
+                    }
+                    //pkgUnqualifiedOnly = !FilterSObject_NSMirrorChildAndParentRels;
+                    //fieldValue = filterSObject((SObject) fieldValue, refStack);
+                    
+                    if (dataMirrorMode == null || dataMirrorMode == RKSecurity.DataMirrorMode.Qualified) {
+                        // recursive calls will pull from SchemaDesc from SchemaStack[SchemaStackTop]:
+                        qualifiedFieldValue = filterSObject(null, (SObject) fieldValue, refStack, RKSecurity.DataMirrorMode.Qualified);
+                    }
+                    if (dataMirrorMode == null || dataMirrorMode == RKSecurity.DataMirrorMode.UnQualified) {
+                        // recursive calls will pull from SchemaDesc from SchemaStack[SchemaStackTop]:
+                        unqualifiedFieldValue = filterSObject(null, (SObject) fieldValue, refStack, RKSecurity.DataMirrorMode.UnQualified);
+                    }
+                } else {
+                    if (!ReadChecker.checkFLS(record.getSObjectType(), fieldName)) {
+                        // No read access at field level (primitive value type, not related record or child rel)
+                        continue;
+                    }
+                    // Check for a masking field in the package:
+                    if (checkPackageMaskingEntity != null && 
+                            getCachedField(record.getSObjectType(), checkPackageMaskingEntity) != null) {
+                        continue;
+                    }
+
+                    qualifiedFieldValue = fieldValue;
+                    unqualifiedFieldValue = fieldValue;
+                }
+
+                // Re-Place the cleaned field value under the original field name, and the non-namespaced field name
+                /*if (!pkgUnqualifiedOnly) {
+                    normalizedFields.put(fieldName, fieldValue);
+                }*/
+                // Save a bit of processing power here if the "stripped" name was unaffected
+                /*if (pkgUnqualifiedOnly || pkgUnqualifiedName != fieldName) {
+                    normalizedFields.put(pkgUnqualifiedName, fieldValue);
+                }*/
+
+                // JLB - Updated to facilitate new data mirror technique
+                if (dataMirrorMode == null || dataMirrorMode == RKSecurity.DataMirrorMode.Qualified) {
+                    normalizedFields.put(fieldName, qualifiedFieldValue);
+                }
+                if (dataMirrorMode == null || dataMirrorMode == RKSecurity.DataMirrorMode.UnQualified) {
+                    normalizedFields.put(pkgUnqualifiedName, unqualifiedFieldValue);
+                }
+            }
+        } finally {
+            //// Apply mock bindings if applicable
+            //RKMock.applyMockBindings(record.getSObjectType(), normalizedFields);
+            V.applyAliasesShallow(record.getSObjectType(), normalizedFields);
+            // Pop this record Id off the reference stack
+            while (refStack.size() > stackTop) {
+                refStack.remove(stackTop);
+            }
+            // if we set a passed-in SchemaDesc, then revert it now:
+            if (enactSchemaDesc) {
+                RKSecurity.revertSchema();
+            }
+        }
+
+        return normalizedFields;
+    }
+    
+    private static List<Map<String, Object>> filterSObject(Vobj.SchemaDesc V, SObject[] records, Id[] refStack, RKSecurity.DataMirrorMode dataMirrorMode) {
+        List<Map<String, Object>> filteredRecords = new List<Map<String, Object>>();
+        if (records != null) {
+            for (SObject record : records) {
+                filteredRecords.add(filterSObject(V, record, refStack, dataMirrorMode));
+            }
+        }
+        return filteredRecords;
+    }
+    //End: Raghil
 }

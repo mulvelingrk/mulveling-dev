@@ -1,10 +1,38 @@
 /*
  * Mike Ulveling
  * 
- * Closes the loop on our most useful SOQLParser / RKSecurity / RKShare features, 
- * and adds configurable Search Restrictions.
+ * Closes the loop on our most useful SOQLParser / RKSecurity / RKShare features, and adds configurable Search Restrictions.
+ * Queries should be issued thourgh a properly crafted SOQLContext instance, rather than via Database.query or inline SOQL 
+ * queries (Apex bracket [] syntax).
  */
 global class SOQLContext {
+    static SOQLContext DefaultSystemMode;
+    static SOQLContext DefaultStrictMode;
+
+    // Static Constructors:
+
+    global static SOQLContext getDefaultSystemMode() {
+        if (DefaultSystemMode == null) {
+            DefaultSystemMode = new SOQLContext('SystemMode', 'System-Mode')
+                .systemSharing()
+                .systemCrudFLS();
+        }
+        return DefaultSystemMode;
+    }
+
+    global static SOQLContext getDefaultStrictMode() {
+        if (DefaultStrictMode == null) {
+            DefaultStrictMode = new SOQLContext('StrictMode', 'Strict-Mode')
+            .strictSharing()
+            .strictCrudFLS();
+        }
+        return DefaultStrictMode;
+    }
+
+    @TestVisible
+    String name;
+    @TestVisible
+    String label;
 
     Integer securityMode = RKSecurity.FILTER_FLS_THROW_CRUD;
     Boolean securityModeTransactional = false;
@@ -26,8 +54,18 @@ global class SOQLContext {
     // * Filtered FLS enforcement (e.g. silent removal of unreadable fields from SELECT clauses).
     // * SOQL queries execute in a "with sharing" context, which enforces platform sharing rules.
     // These behaviors can be changed / customized by using the builder methods defined below. 
-    global SOQLContext() {
+    global SOQLContext(String name, String label) {
+        this.name = name;
+        this.label = label;
         this.sharingModel = new RKShare.WithPlatformSharing();
+    }
+
+    global SOQLContext(String name) {
+        this(name, name);
+    }
+
+    global SOQLContext() {
+        this('AdHoc');
     }
 
     // "System Mode" CRUD/FLS. Does not assert CRUD nor FLS.
@@ -43,8 +81,15 @@ global class SOQLContext {
         return this;
     }
 
+    global SOQLContext strictSharing() {
+        this.sharingModel = new RKShare.WithPlatformSharing();
+        return this;
+    }
+
     // "System Mode" sharing applies "without sharing" on query execution:
     global SOQLContext systemSharing() {
+        // !! READ THE COMMENT ABOVE
+        // The purpose of this method is to engage WithOUT Sharing - DO NOT change this to With Sharing:
         this.sharingModel = new RKShare.WithoutPlatformSharing(null);
         return this;
     }
@@ -90,13 +135,42 @@ global class SOQLContext {
             SOQLParser.SOQL soql = 
                 new SOQLParser.SOQL(queryString)
                     .rebindPool(rebindPool)
-                    .val(namedBinds)
-                    .val(anonymousBinds)
+                    .vals(namedBinds)
+                    .vals(anonymousBinds)
                     .resolve(enforceCrudFLS);
             
             assertSearchRestrictions(soql)
                 .bind();
             return sharingModel.query(soql.ser(false), rebindPool);
+        } finally {
+            RKSecurity.restore(sp);
+        }
+    }
+
+    global String getSafeQuery(String queryString, Map<String, Object> namedBinds, Object[] anonymousBinds, SOQLParser.LocalRebindPool rebindPool) {
+        // Works like startSystemMode(), but only acts like System mode with regard to record sharing, not CRUD/FLS:
+        RKSecurity.SecuritySavepoint sp = new RKSecurity.SecuritySavepoint();
+        try {
+            RKSecurity.setSecurityMode(securityMode);
+            if (securityModeTransactional) {
+                RKSecurity.transactionalThrow();
+            }
+            
+            // Uses a LocalReBindPool, e.g. Id[] ids0, ids1, ids2:
+            //SOQLParser.LocalRebindPool rebindPool = RKShare.mintRebindPool();
+            SOQLParser.SOQL soql = 
+                new SOQLParser.SOQL(queryString);
+            if (rebindPool != null) {
+                soql.rebindPool(rebindPool);
+            }
+            soql.vals(namedBinds)
+                .vals(anonymousBinds)
+                .resolve(enforceCrudFLS);
+            
+            assertSearchRestrictions(soql)
+                .bind();
+            //return sharingModel.query(soql.ser(false), rebindPool);
+            return soql.ser(false);
         } finally {
             RKSecurity.restore(sp);
         }
@@ -201,7 +275,7 @@ global class SOQLContext {
             if (matchElmtsByPathLC.keySet().size() == 0) {
                 configError('At least 1 match must be defined');
             }
-            if (minimumMatches != null && minimumMatches < 1) {
+            if (minimumMatches == null || minimumMatches < 1) {
                 configError('Minimum matches must be a positive integer; got ' + minimumMatches);
             }
             for (String pathLC : freeElmtsByPathLC.keySet()) {
@@ -249,7 +323,8 @@ global class SOQLContext {
                 // nestings, though note other rules (above) prevent the existence of OR and NOT at the
                 // top level:
                 Boolean isTop = false;
-                Boolean isTopAnd = false;
+                Boolean isTopAND = false;
+                Boolean allParentsAND = true;
                 for (ASTCond parent : parents()) {
                     //// Extra groupings don't change our structure analysis:
                     //if (parent.isGroup()) {
@@ -260,18 +335,19 @@ global class SOQLContext {
                     // If it's under an OR or NOT then it can only qualify for "freestyle" elements. 
                     // Set both structure flags false, and we're done:
                     if (parent.isOr() || parent.isNot()) {
-                        isTopAnd = false;
+                        isTopAND = false;
+                        allParentsAND = false;
                         break;
                     } else if (parent.isAnd()) {
                         // If it's under an AND but we were already under another AND then it's more
                         // deeply nested than top level. Set both structure flags false, and we're done:
-                        if (isTopAnd) {
-                            isTopAnd = false;
+                        if (isTopAND) {
+                            isTopAND = false;
                             break;
                         // If it's under an AND and this is the first one, then it (currently) qualifies
-                        // as a top-level AND. Set the isTopAnd structure flag to true and continue:
+                        // as a top-level AND. Set the isTopAND structure flag to true and continue:
                         } else {
-                            isTopAnd = true;
+                            isTopAND = true;
                             continue;
                         }
                     }
@@ -284,20 +360,20 @@ global class SOQLContext {
                 ExactMatchElmt matchElmt = matchElmtsByPathLC.get(path.toLowerCase());
                 FreestyleElmt freeElmt;
                 if (matchElmt != null) {
-                    if (!isTop && !isTopAnd) {
+                    //if (!isTop && !isTopAND) {
+                    if (!(isTop || allParentsAND)) {
                         violation('Match condition "' + path + 
-                            '" cannot be nested deeper than a top-level AND condition');
+                            //'" cannot be nested deeper than a top-level AND condition');
+                            '" cannot reside within OR or NOT conditions');
                     } else if (simpleCond.op.lexeme != '=') {
                         violation('Match condition "' + path + '" is only allowed "="; got "' + 
                             simpleCond.op.lexeme + '"');
                     } else if (simpleCond.val.isList()) {
                         violation('Match condition "' + path + 
                             '" is only allowed simple match values; got list value');
-                    } else if (!simpleCond.val.isLiteral()) {
-                        // TODO: verify that this branch always implies a param, or we risk 
-                        // NullPointerException:
+                    } else if (simpleCond.val.isUnboundNamedParam()) {
                         violation('Match condition "' + path + 
-                            '" is only allowed literal match values; got bind parameter ":' + 
+                            '" is not allowed unresolved named bind ":' + 
                             simpleCond.val.scalar.param.lexeme + '"');
                     } else {
                         matchesCounter++;
@@ -305,7 +381,7 @@ global class SOQLContext {
                 } else {
                     freeElmt = freeElmtsByPathLC.get(path.toLowerCase());
                     if (freeElmt != null) {
-                        if (freeElmt.allowNested != true && !isTop && !isTopAnd) {
+                        if (freeElmt.allowNested != true && !isTop && !isTopAND) {
                             violation('Freestyle condition "' + path + 
                                 '" cannot be nested deeper than a top-level AND condition');
                         } else if (freeElmt.allowAnyOp != true && simpleCond.op.lexeme != '=') {

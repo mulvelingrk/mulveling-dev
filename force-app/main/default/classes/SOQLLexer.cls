@@ -1,6 +1,8 @@
 /*
 * Mike Ulveling
 *
+* Don't touch this code if you're not me.
+*
 * Lexical analyzer for SOQL WHERE conditions. Highly performant, as far as lexical analysis in Apex goes. The token definitions here have purposefully
 * been kept as simple and minimal as possible (e.g. no DATE, DATETIME, or QUALIFIED_NAME token types; DECIMAL_NUMBER tokens do not have signs); from
 * here it's up to the parser to interpret and combine the basic elements into more complex entities.
@@ -113,6 +115,7 @@ public class SOQLLexer {
     public static final Integer OPEN_BRACKET  = tokid(-1);
     public static final Integer CLOSE_BRACKET = tokid(-1);
     public static final Integer QUEST_MARK    = tokid(-1);
+    public static final Integer STAR          = tokid(-1);
     
     // The following operators NO LONGER raise a RefExpr to MathExpr
     public static final Integer PLUS  = tokid(-1); //tokid(4);
@@ -148,7 +151,7 @@ public class SOQLLexer {
     public static final Integer KW_ENDS_WITH    = tokid(3);
     public static final Integer KW_CONTAINS     = tokid(3);
     public static final Integer KW_BETWEEN      = tokid(3);
-// the following keywords are not expression-level:
+    // the following keywords are not expression-level:
     public static final Integer KW_SELECT       = tokid(-1);
     public static final Integer KW_FROM         = tokid(-1);
     public static final Integer KW_WHERE        = tokid(-1);
@@ -236,47 +239,48 @@ public class SOQLLexer {
     // using a hash map here would look more elegant, but the following scheme is far more performant (in Apex, indexOf is much faster than a Map
     // lookup, at least until the search string becomes extremely long
     // !! note that entries for letters and digits are generated and added in the following static block
-    static String TransStateLookup1 = ',:()[]+-=!|&\'"><.?';
+    static String TransStateLookup1 = ',:()[]+-=!|&\'"><.?*';
     // resolves 1 char of lookahead to a concrete token type, a transition-state, or null (i.e. not a legal "black" token):
     static final Integer[] TransStateTable1 = new Integer[]{
         COMMA,
-            COLON,
-            OPEN_PAREN,
-            CLOSE_PAREN,
-            OPEN_BRACKET,
-            CLOSE_BRACKET,
-            PLUS,
-            MINUS,
-            EQUALS,
-            //        TS_NOT_EQUALS,
-            TS_NEXT | LOGICAL_NOT,
-            TS_LOGICAL_OR,
-            TS_LOGICAL_AND,
-            TS_SQ_STRING,
-            TS_DQ_STRING,
-            TS_NEXT | GREATER_THAN,
-            TS_NEXT | LESS_THAN,
-            TS_NEXT | DOT,
-            QUEST_MARK
-            };
-                // add transition-states for the usual ASCII digits [0-9] and letters [a-zA-Z]:
-                static {
-                    for (Integer i=0; i <=9; i++) {
-                        TransStateLookup1 += i;
-                        //TransStateTable1.add(TS_COMPLEX | DECIMAL_NUMBER);
-                        TransStateTable1.add(TS_NUMBER);
-                    }
-                    String alpha = 'abcdefghijklmnopqrstuvwxyz';
-                    String ch;
-                    for (Integer i=0; i < alpha.length(); i++) {
-                        TransStateLookup1 += (ch = alpha.mid(i, 1));
-                        //TransStateTable1.add(TS_COMPLEX | NAME);
-                        TransStateTable1.add(TS_NAME);
-                        TransStateLookup1 += (ch = ch.toUpperCase());
-                        //TransStateTable1.add(TS_COMPLEX | NAME);
-                        TransStateTable1.add(TS_NAME);
-                    }
-                }
+        COLON,
+        OPEN_PAREN,
+        CLOSE_PAREN,
+        OPEN_BRACKET,
+        CLOSE_BRACKET,
+        PLUS,
+        MINUS,
+        EQUALS,
+        //        TS_NOT_EQUALS,
+        TS_NEXT | LOGICAL_NOT,
+        TS_LOGICAL_OR,
+        TS_LOGICAL_AND,
+        TS_SQ_STRING,
+        TS_DQ_STRING,
+        TS_NEXT | GREATER_THAN,
+        TS_NEXT | LESS_THAN,
+        TS_NEXT | DOT,
+        QUEST_MARK,
+        STAR
+    };
+    // add transition-states for the usual ASCII digits [0-9] and letters [a-zA-Z]:
+    static {
+        for (Integer i=0; i <=9; i++) {
+            TransStateLookup1 += i;
+            //TransStateTable1.add(TS_COMPLEX | DECIMAL_NUMBER);
+            TransStateTable1.add(TS_NUMBER);
+        }
+        String alpha = 'abcdefghijklmnopqrstuvwxyz';
+        String ch;
+        for (Integer i=0; i < alpha.length(); i++) {
+            TransStateLookup1 += (ch = alpha.mid(i, 1));
+            //TransStateTable1.add(TS_COMPLEX | NAME);
+            TransStateTable1.add(TS_NAME);
+            TransStateLookup1 += (ch = ch.toUpperCase());
+            //TransStateTable1.add(TS_COMPLEX | NAME);
+            TransStateTable1.add(TS_NAME);
+        }
+    }
     // concats all possible whitespace chars with TransStateLookup1, so that the boundary scanner loop can collect as much information as possible
     // in just 1 indexOf call plus 1 array-access:
     static final String WhiteBlackLookup = ' \t\n' + TransStateLookup1;
@@ -286,87 +290,87 @@ public class SOQLLexer {
     static String TransStateLookup2 = '!=>=<=<>';
     static final Integer[] TransStateTable2 = new Integer[]{
         NOT_EQUALS, null,
-            GREATER_THAN_EQUALS, null,
-            LESS_THAN_EQUALS, null,
-            NOT_EQUALS, null
-            };
-                // add transition states for \.\d (e.g. '.9'):
-                static {
-                    for (Integer i=0; i <=9; i++) {
-                        TransStateLookup2 += '.' + i;
-                        //TransStateTable2.add(TS_COMPLEX | DECIMAL_NUMBER);
-                        TransStateTable2.add(TS_NUMBER);
-                        TransStateTable2.add(null);
-                    }
-                }
+        GREATER_THAN_EQUALS, null,
+        LESS_THAN_EQUALS, null,
+        NOT_EQUALS, null
+     };
+    // add transition states for \.\d (e.g. '.9'):
+    static {
+        for (Integer i=0; i <=9; i++) {
+            TransStateLookup2 += '.' + i;
+            //TransStateTable2.add(TS_COMPLEX | DECIMAL_NUMBER);
+            TransStateTable2.add(TS_NUMBER);
+            TransStateTable2.add(null);
+        }
+    }
     
     static final Map<String, Integer> KeywordsMap = new Map<String, Integer>{
         'OR'       => KW_OR,
-            'AND'      => KW_AND,
-            'NOT'      => KW_NOT,
-            'like'     => KW_LIKE,
-            'IN'       => KW_IN,
-            'INCLUDES' => KW_INCLUDES,
-            'EXCLUDES' => KW_EXCLUDES,
-            'beginsWith' => KW_BEGINS_WITH,
-            'endsWith'   => KW_ENDS_WITH,
-            'contains'   => KW_CONTAINS,
-            'between'    => KW_BETWEEN,
-            'SELECT'   => KW_SELECT,
-            'FROM'     => KW_FROM,
-            'WHERE'    => KW_WHERE,
-            'ORDER'    => KW_ORDER,
-            'LIMIT'    => KW_LIMIT,
-            'ASC'      => KW_ASC,
-            'DESC'     => KW_DESC,
-            'NULLS'    => KW_NULLS,
-            'LAST'     => KW_LAST,
-            'FIRST'    => KW_FIRST,
-            'SAFE'     => KW_SAFE,
-            'SYSTEM'   => KW_SYSTEM,
-            'FIELDSET' => KW_FIELDSET,
-            'true'  => KW_TRUE,
-            'false' => KW_FALSE,
-            'null'  => KW_NULL,
-            'TODAY'                  => KW_TODAY,
-            'YESTERDAY'              => KW_YESTERDAY,
-            'TOMORROW'               => KW_TOMORROW,
-            'THIS_WEEK'              => KW_THIS_WEEK,
-            'LAST_WEEK'              => KW_LAST_WEEK,
-            'NEXT_WEEK'              => KW_NEXT_WEEK,
-            'THIS_MONTH'             => KW_THIS_MONTH,
-            'LAST_MONTH'             => KW_LAST_MONTH,
-            'NEXT_MONTH'             => KW_NEXT_MONTH,
-            'LAST_90_DAYS'           => KW_LAST_90_DAYS,
-            'NEXT_90_DAYS'           => KW_NEXT_90_DAYS,
-            'THIS_QUARTER'           => KW_THIS_QUARTER,
-            'LAST_QUARTER'           => KW_LAST_QUARTER,
-            'NEXT_QUARTER'           => KW_NEXT_QUARTER,
-            'THIS_YEAR'              => KW_THIS_YEAR,
-            'LAST_YEAR'              => KW_LAST_YEAR,
-            'NEXT_YEAR'              => KW_NEXT_YEAR,
-            'THIS_FISCAL_QUARTER'    => KW_THIS_FISCAL_QUARTER,
-            'LAST_FISCAL_QUARTER'    => KW_LAST_FISCAL_QUARTER,
-            'NEXT_FISCAL_QUARTER'    => KW_NEXT_FISCAL_QUARTER,
-            'THIS_FISCAL_YEAR'       => KW_THIS_FISCAL_YEAR,
-            'LAST_FISCAL_YEAR'       => KW_LAST_FISCAL_YEAR,
-            'NEXT_FISCAL_YEAR'       => KW_NEXT_FISCAL_YEAR,
-            'NEXT_N_DAYS'            => KW_NEXT_N_DAYS,
-            'LAST_N_DAYS'            => KW_LAST_N_DAYS,
-            'NEXT_N_MONTHS'          => KW_NEXT_N_MONTHS,
-            'LAST_N_MONTHS'          => KW_LAST_N_MONTHS,
-            'NEXT_N_QUARTERS'        => KW_NEXT_N_QUARTERS,
-            'LAST_N_QUARTERS'        => KW_LAST_N_QUARTERS,
-            'NEXT_N_YEARS'           => KW_NEXT_N_YEARS,
-            'LAST_N_YEARS'           => KW_LAST_N_YEARS,
-            'NEXT_N_FISCAL_QUARTERS' => KW_NEXT_N_FISCAL_QUARTERS,
-            'LAST_N_FISCAL_QUARTERS' => KW_LAST_N_FISCAL_QUARTERS,
-            'NEXT_N_FISCAL_YEARS'    => KW_NEXT_N_FISCAL_YEARS,
-            'LAST_N_FISCAL_YEARS'    => KW_LAST_N_FISCAL_YEARS
-            };
+        'AND'      => KW_AND,
+        'NOT'      => KW_NOT,
+        'like'     => KW_LIKE,
+        'IN'       => KW_IN,
+        'INCLUDES' => KW_INCLUDES,
+        'EXCLUDES' => KW_EXCLUDES,
+        'beginsWith' => KW_BEGINS_WITH,
+        'endsWith'   => KW_ENDS_WITH,
+        'contains'   => KW_CONTAINS,
+        'between'    => KW_BETWEEN,
+        'SELECT'   => KW_SELECT,
+        'FROM'     => KW_FROM,
+        'WHERE'    => KW_WHERE,
+        'ORDER'    => KW_ORDER,
+        'LIMIT'    => KW_LIMIT,
+        'ASC'      => KW_ASC,
+        'DESC'     => KW_DESC,
+        'NULLS'    => KW_NULLS,
+        'LAST'     => KW_LAST,
+        'FIRST'    => KW_FIRST,
+        'SAFE'     => KW_SAFE,
+        'SYSTEM'   => KW_SYSTEM,
+        'FIELDSET' => KW_FIELDSET,
+        'true'  => KW_TRUE,
+        'false' => KW_FALSE,
+        'null'  => KW_NULL,
+        'TODAY'                  => KW_TODAY,
+        'YESTERDAY'              => KW_YESTERDAY,
+        'TOMORROW'               => KW_TOMORROW,
+        'THIS_WEEK'              => KW_THIS_WEEK,
+        'LAST_WEEK'              => KW_LAST_WEEK,
+        'NEXT_WEEK'              => KW_NEXT_WEEK,
+        'THIS_MONTH'             => KW_THIS_MONTH,
+        'LAST_MONTH'             => KW_LAST_MONTH,
+        'NEXT_MONTH'             => KW_NEXT_MONTH,
+        'LAST_90_DAYS'           => KW_LAST_90_DAYS,
+        'NEXT_90_DAYS'           => KW_NEXT_90_DAYS,
+        'THIS_QUARTER'           => KW_THIS_QUARTER,
+        'LAST_QUARTER'           => KW_LAST_QUARTER,
+        'NEXT_QUARTER'           => KW_NEXT_QUARTER,
+        'THIS_YEAR'              => KW_THIS_YEAR,
+        'LAST_YEAR'              => KW_LAST_YEAR,
+        'NEXT_YEAR'              => KW_NEXT_YEAR,
+        'THIS_FISCAL_QUARTER'    => KW_THIS_FISCAL_QUARTER,
+        'LAST_FISCAL_QUARTER'    => KW_LAST_FISCAL_QUARTER,
+        'NEXT_FISCAL_QUARTER'    => KW_NEXT_FISCAL_QUARTER,
+        'THIS_FISCAL_YEAR'       => KW_THIS_FISCAL_YEAR,
+        'LAST_FISCAL_YEAR'       => KW_LAST_FISCAL_YEAR,
+        'NEXT_FISCAL_YEAR'       => KW_NEXT_FISCAL_YEAR,
+        'NEXT_N_DAYS'            => KW_NEXT_N_DAYS,
+        'LAST_N_DAYS'            => KW_LAST_N_DAYS,
+        'NEXT_N_MONTHS'          => KW_NEXT_N_MONTHS,
+        'LAST_N_MONTHS'          => KW_LAST_N_MONTHS,
+        'NEXT_N_QUARTERS'        => KW_NEXT_N_QUARTERS,
+        'LAST_N_QUARTERS'        => KW_LAST_N_QUARTERS,
+        'NEXT_N_YEARS'           => KW_NEXT_N_YEARS,
+        'LAST_N_YEARS'           => KW_LAST_N_YEARS,
+        'NEXT_N_FISCAL_QUARTERS' => KW_NEXT_N_FISCAL_QUARTERS,
+        'LAST_N_FISCAL_QUARTERS' => KW_LAST_N_FISCAL_QUARTERS,
+        'NEXT_N_FISCAL_YEARS'    => KW_NEXT_N_FISCAL_YEARS,
+        'LAST_N_FISCAL_YEARS'    => KW_LAST_N_FISCAL_YEARS
+    };
                 
-                // !! note that the parser can identify strict-mode reserved tokens by the test: token.ttype >= STRICT_RESERVED_MINIMUM:
-                static String KeywordsLookup = '';
+    // !! note that the parser can identify strict-mode reserved tokens by the test: token.ttype >= STRICT_RESERVED_MINIMUM:
+    static String KeywordsLookup = '';
     static Integer[] KeywordsTable;
     static Integer[] KeywordLenTable;
     static {
@@ -626,22 +630,22 @@ public class SOQLLexer {
                                 toks[++top] = tok;
                                 continue;
                             }
-                            /*
-} else if (ts1 == TS_NOT_EQUALS) {
-if (ch2 != '!=') {
-// a bang char followed by <eof> or any alphanumeric char should be reported as an illegal bang char:
-if (index + 1 >= streamLen || ch2.mid(1, 1).isAlphanumeric()) {
-throw new ScanException(errorToken(cursor, '!', ERR_ILLEGAL_CHAR,
-'illegal character \'!\'', toks[top]));
-// a bang char followed by a symbol should be reported as an illegal 2-char token:
-} else {
-throw new ScanException(errorToken(cursor, ch2, ERR_ILLEGAL_TOK,
-'illegal token \'' + ch2 + '\'', toks[top]));
-}
-}
-toks[++top] = newToken(cursor, NOT_EQUALS, ch2, null, null, null);
-continue;
-*/
+                        /*
+                        } else if (ts1 == TS_NOT_EQUALS) {
+                            if (ch2 != '!=') {
+                                // a bang char followed by <eof> or any alphanumeric char should be reported as an illegal bang char:
+                                if (index + 1 >= streamLen || ch2.mid(1, 1).isAlphanumeric()) {
+                                    throw new ScanException(errorToken(cursor, '!', ERR_ILLEGAL_CHAR,
+                                    'illegal character \'!\'', toks[top]));
+                                // a bang char followed by a symbol should be reported as an illegal 2-char token:
+                                } else {
+                                    throw new ScanException(errorToken(cursor, ch2, ERR_ILLEGAL_TOK,
+                                    'illegal token \'' + ch2 + '\'', toks[top]));
+                                }
+                            }
+                        toks[++top] = newToken(cursor, NOT_EQUALS, ch2, null, null, null);
+                        continue;
+                        */
                         } else if (ts1 == TS_LOGICAL_OR || ts1 == TS_LOGICAL_AND) {
                             if (ch2 == '||') {
                                 toks[++top] = newToken(cursor, LOGICAL_OR, ch2, null, null, null);
@@ -680,19 +684,19 @@ continue;
             } while (true); // outer scanToken loop
         } catch (ScanException e) {
             /*
-// !! note that cursor has already been incremented by the lead boundary (if any), but not by the failed/illegal token. this means that
-// the lead token's lexeme/data will be "lost" after this failure, but this should not be an issue since there is no potential/need
-// for error recovery (i.e. no continued scanning) after any of the ScanExceptions:
-Token errorLoc = cursor.clone();
-errorLoc.index += e.offendingOffsetChars;
-if (e.offendingOffsetLines > 0) {
-errorLoc.line += e.offendingOffsetLines;
-errorLoc.col = e.offendingOffsetCol;
-} else {
-errorLoc.col += e.offendingOffsetChars;
-}
-errorLoc.lexeme = e.offendingLexeme;
-*/
+            // !! note that cursor has already been incremented by the lead boundary (if any), but not by the failed/illegal token. this means that
+            // the lead token's lexeme/data will be "lost" after this failure, but this should not be an issue since there is no potential/need
+            // for error recovery (i.e. no continued scanning) after any of the ScanExceptions:
+            Token errorLoc = cursor.clone();
+            errorLoc.index += e.offendingOffsetChars;
+            if (e.offendingOffsetLines > 0) {
+                errorLoc.line += e.offendingOffsetLines;
+                errorLoc.col = e.offendingOffsetCol;
+            } else {
+                errorLoc.col += e.offendingOffsetChars;
+            }
+            errorLoc.lexeme = e.offendingLexeme;
+            */
             
             toks[++top] = e.errorTok;
             

@@ -1,6 +1,8 @@
 /*
 * Mike Ulveling
 *
+* Don't touch this code if you're not me.
+*
 * !! See here for full documention of usage and features:
 * https://docs.google.com/document/d/1WrjDwrvI_HrDIV7pJX8P9aytLqD_PATR_10tqhIwk7o/edit
 *
@@ -88,6 +90,10 @@ global class SOQLParser {
 
         Boolean isFieldset() {
             return funcsCatLC.indexOf('.fieldset') > -1;
+        }
+
+        Boolean isStarSelector() {
+            return pathToks.size() > 0 && pathToks[0].ttype == SOQLLexer.STAR;
         }
     }
 
@@ -635,6 +641,7 @@ global class SOQLParser {
             while (selectsIndex < selectsLen) {
                 String[] sels = new String[]{};
                 Boolean safeModeForChunk = null;
+                SelectElmt starSelectorElmt = null;
                 for (; selectsIndex < selectsLen; selectsIndex++) {
                     SelectElmt elmt = this.selects[selectsIndex];
                     Boolean safeModeForElmt = safeModeDefault == true;
@@ -653,13 +660,24 @@ global class SOQLParser {
                     } else if (safeModeForChunk != safeModeForElmt) {
                         break;
                     }
-                    String[] parts = new String[]{};
-                    for (SOQLLexer.Token partTok : elmt.pathToks) {
-                        parts.add(partTok.lexeme);
+
+                    if (elmt.isStarSelector()) {
+                        starSelectorElmt = elmt;
+                    } else {
+                        String[] parts = new String[]{};
+                        for (SOQLLexer.Token partTok : elmt.pathToks) {
+                            parts.add(partTok.lexeme);
+                        }
+                        sels.add(String.join(parts, '.'));
                     }
-                    sels.add(String.join(parts, '.'));
                 }
-                pathsMap.putAll(RKSecurity.selectMapLogic(safeModeForChunk, false, this.resTable, sels, null));
+
+                if (sels.size() > 0) {
+                    pathsMap.putAll(RKSecurity.selectMapLogic(safeModeForChunk, false, this.resTable, sels, null));
+                }
+                if (starSelectorElmt != null) {
+                    pathsMap.putAll(RKSecurity.selectStarLogic(safeModeForChunk, this.resTable));
+                }
             }
             return pathsMap;
         }
@@ -854,8 +872,12 @@ global class SOQLParser {
                     break;
                 }
 
+                if (peek == SOQLLexer.STAR) {
+                    SOQLLexer.Token starToken = toks[lex.next++]; // consume the "*" token
+                    addSelectableEntity(altLexer, new SOQLLexer.Token[]{ starToken }, func, nestedFunc);
+                
                 // Nested queries start with an open-parenthesis:
-                if (peek == SOQLLexer.OPEN_PAREN) {
+                } if (peek == SOQLLexer.OPEN_PAREN) {
                     lex.next++; // consume and discard open-paren
                     peek = toks[lex.next].ttype;
                     if (peek != SOQLLexer.KW_SELECT && peek != SOQLLexer.KW_FROM) {
@@ -3165,6 +3187,10 @@ start = start.addYears(startOffset);
 
         global Boolean isNamedParam() {
             return this.scalar != null && this.scalar.paramName != null;
+        }
+
+        global Boolean isUnboundNamedParam() {
+            return this.scalar != null && this.scalar.paramName != null && this.scalar.paramResolvedValue == null;
         }
 
         global Boolean isIndexedParam() {
