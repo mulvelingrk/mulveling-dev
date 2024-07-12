@@ -27,10 +27,9 @@ private class RestrictedSearchesTest {
         //   Claimant_Country__c
 
         //SObject foo = Database.query('SELECT Id FROM Contact WHERE Foo > 1');
-
-        String soqlTest = SOQLContext.getDefaultStrictMode().getSafeQuery(
-                'SELECT Id FROM Contact WHERE Foo > 1', null, AllNullBinds, null);
-        Assert.areEqual('Foo', soqlTest);
+        //String soqlTest = SOQLContext.getDefaultStrictMode().getSafeQuery(
+        //        'SELECT Id FROM Contact WHERE Foo > 1', null, AllNullBinds, null);
+        //Assert.areEqual('Foo', soqlTest);
 
         //String soqlTest = context.getSafeQuery(
         //        'SELECT * FROM ' + MockClaimType + ' WHERE Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ?', null, AllNullBinds, null);

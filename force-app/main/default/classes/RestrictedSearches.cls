@@ -73,7 +73,11 @@ global without sharing class RestrictedSearches {
                 'Restricted Search [' + bestMatch.MasterLabel + ']');
             SOQLContext.RestrictedToExactMatches rule = 
                 new SOQLContext.RestrictedToExactMatches(bestMatch.MasterLabel, targetObjectType);
-                ruledContext.addRule(rule);
+            ruledContext.addRule(rule);
+            // !! For now we layer restriction rules atop "System Mode" of operation, however we may wish to offer the option 
+            // of adding atop "Strict Mode":
+            ruledContext.systemCrudFLS();
+            ruledContext.systemSharing();
             if (bestMatch.Minimum_Matches__c != null) {
                 rule.setMinimumMatches(bestMatch.Minimum_Matches__c.intValue());
             }
