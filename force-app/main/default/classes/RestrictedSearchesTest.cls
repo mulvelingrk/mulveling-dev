@@ -8,8 +8,8 @@ private class RestrictedSearchesTest {
 
     @IsTest
     private static void TestStrictCustomLookup() {
-        context = RestrictedSearches.loadRuleBasedMetadata(
-            'LWC - Strict Custom Lookup', MockClaimType, SOQLContext.getDefaultStrictMode());
+        context = RestrictedSearches.loadRulesAtopSystemBase(
+            'LWC - Strict Custom Lookup', MockClaimType, null);
         
         Assert.areEqual('Restricted Search [RKUX Test SCL]', context.label);
         
@@ -27,11 +27,11 @@ private class RestrictedSearchesTest {
         //   Claimant_Country__c
 
         //SObject foo = Database.query('SELECT Id FROM Contact WHERE Foo > 1');
-        //String soqlTest = SOQLContext.getDefaultStrictMode().getSafeQuery(
-        //        'SELECT Id FROM Contact WHERE Foo > 1', null, AllNullBinds, null);
+        //String soqlTest = SOQLContext.newStrictMode().getQuery(
+        //        'SELECT Name, FIELDSET(Contact_FS_1) FROM Contact', null, AllNullBinds, null);
         //Assert.areEqual('Foo', soqlTest);
 
-        //String soqlTest = context.getSafeQuery(
+        //String soqlTest = context.getQuery(
         //        'SELECT * FROM ' + MockClaimType + ' WHERE Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ?', null, AllNullBinds, null);
         //Assert.areEqual('Foo', soqlTest);
 
@@ -95,7 +95,7 @@ private class RestrictedSearchesTest {
     static String assertSuccess(String whereClause, Object[] anonBinds) {
         String soql;
         try {
-            soql = context.getSafeQuery(
+            soql = context.getQuery(
                 'FROM ' + MockClaimType + ' WHERE ' + whereClause, null, anonBinds, null);
         } catch (SOQLContext.RestrictedSearchException err) {
             Assert.fail('Unexpected RestrictedSearch Violation: ' + err.getMessage());
@@ -110,7 +110,7 @@ private class RestrictedSearchesTest {
     static void assertViolation(String whereClause, Object[] anonBinds) {
         Boolean gotErr = false;
         try {
-            context.getSafeQuery(
+            context.getQuery(
                 'FROM ' + MockClaimType + ' WHERE ' + whereClause, null,anonBinds, null);
         } catch (SOQLContext.RestrictedSearchException err) {
             gotErr = true;

@@ -7,24 +7,99 @@
  */
 global class SOQLContext {
     static SOQLContext DefaultSystemMode;
+    static SOQLContext DefaultSafeMode;
     static SOQLContext DefaultStrictMode;
+
+    // Static Convenience Methods For Issuing Queries:
+
+    global static SObject[] systemQuery(String query) {
+        return systemQuery(query, AllNullBinds);
+    }
+
+    global static SObject[] systemQuery(String query, Object bind1) {
+        return systemQuery(query, new Object[]{ bind1 });
+    }
+
+    global static SObject[] systemQuery(String query, Object bind1, Object bind2) {
+        return systemQuery(query, new Object[]{ bind1, bind2 });
+    }
+
+    global static SObject[] systemQuery(String query, Object bind1, Object bind2, Object bind3) {
+        return systemQuery(query, new Object[]{ bind1, bind2, bind3 });
+    }
+
+    global static SObject[] systemQuery(String query, Object[] anonymousBindValues) {
+        return standardSystemMode().query(query, null, anonymousBindValues);
+    }
+
+    global static SObject[] safeQuery(String query) {
+        return safeQuery(query, AllNullBinds);
+    }
+
+    global static SObject[] safeQuery(String query, Object[] anonymousBindValues) {
+        return standardSafeMode().query(query, null, anonymousBindValues);
+    }
+
+    global static SObject[] strictQuery(String query) {
+        return strictQuery(query, AllNullBinds);
+    }
+
+    global static SObject[] strictQuery(String query, Object[] anonymousBindValues) {
+        return standardStrictMode().query(query, null, anonymousBindValues);
+    }
+
+    @TestVisible
+    private static Object[] AllNullBinds = new Object[]{ 
+        null, null, null, null, null, null, null, null, null, null,
+        null, null, null, null, null, null, null, null, null, null
+    };
 
     // Static Constructors:
 
-    global static SOQLContext getDefaultSystemMode() {
+    // This instance is NOT cached and modifications to it ARE allowed (!sealed):
+    global static SOQLContext newSystemMode() {
+        return new SOQLContext('SystemMode', 'System-Mode')
+            .systemSharing()
+            .systemCrudFLS();
+    }
+
+    // This instance is NOT cached and modifications to it ARE allowed (!sealed):
+    global static SOQLContext newSafeMode() {
+        return new SOQLContext('SafeMode', 'Safe-Mode')
+            .strictSharing()
+            .throwCrudFilterFLS();
+    }
+
+    // This instance is NOT cached and modifications to it ARE allowed (!sealed):
+    global static SOQLContext newStrictMode() {
+        return new SOQLContext('StrictMode', 'Strict-Mode')
+            .strictSharing()
+            .strictCrudFLS();
+    }
+
+    // This instance is cached and modifications to it are NOT allowed (sealed):
+    global static SOQLContext standardSystemMode() {
         if (DefaultSystemMode == null) {
-            DefaultSystemMode = new SOQLContext('SystemMode', 'System-Mode')
-                .systemSharing()
-                .systemCrudFLS();
+            DefaultSystemMode = newSystemMode();
+            DefaultSystemMode.sealed = true;
         }
         return DefaultSystemMode;
     }
 
-    global static SOQLContext getDefaultStrictMode() {
+    // This instance is cached and modifications to it are NOT allowed (sealed):
+    global static SOQLContext standardSafeMode() {
+        if (DefaultSafeMode == null) {
+            DefaultSafeMode = newSafeMode();
+            DefaultSafeMode.sealed = true;
+        }
+        return DefaultSafeMode;
+    }
+
+    // This instance is cached and modifications to it are NOT allowed (sealed):
+    global static SOQLContext standardStrictMode() {
         if (DefaultStrictMode == null) {
-            DefaultStrictMode = new SOQLContext('StrictMode', 'Strict-Mode')
-            .strictSharing()
-            .strictCrudFLS();
+            DefaultStrictMode = newStrictMode();
+            DefaultStrictMode.sealed = true;
         }
         return DefaultStrictMode;
     }
@@ -33,6 +108,9 @@ global class SOQLContext {
     String name;
     @TestVisible
     String label;
+
+    // Dictates whether further modifications to this SOQLContext specification are allowed:
+    Boolean sealed = false;
 
     Integer securityMode = RKSecurity.FILTER_FLS_THROW_CRUD;
     Boolean securityModeTransactional = false;
@@ -55,8 +133,9 @@ global class SOQLContext {
     // * SOQL queries execute in a "with sharing" context, which enforces platform sharing rules.
     // These behaviors can be changed / customized by using the builder methods defined below. 
     global SOQLContext(String name, String label) {
-        this.name = name;
-        this.label = label;
+        setName(name, label);
+        //this.name = name;
+        //this.label = label;
         this.sharingModel = new RKShare.WithPlatformSharing();
     }
 
@@ -68,26 +147,89 @@ global class SOQLContext {
         this('AdHoc');
     }
 
+    global SOQLContext fork(String name, String label) {
+        SOQLContext forked = new SOQLContext(name, label);
+        // forked copies are unsealed:
+        forked.sealed = false;
+        forked.securityMode = securityMode;
+        forked.securityModeTransactional = securityModeTransactional;
+        forked.enforceCrudFLS = enforceCrudFLS;
+        forked.recordAccessBypassTypes = recordAccessBypassTypes.clone();
+        forked.customAccess = customAccess;
+        forked.sharingModel = sharingModel;
+        forked.searchRules = searchRules.clone();
+        return forked;
+    }
+
+    public String name() {
+        return name;
+    }
+
+    public void setName(String name) {
+        setName(name, name);
+    }
+
+    public void setName(String name,  String label) {
+        Assert.isTrue(String.isNotBlank(name), 'SOQLContext name cannot be blank');
+        this.name = name;
+        this.label = String.isBlank(label) ? name : label;
+    }
+
+    public Boolean isSealed() {
+        return sealed == true;
+    }
+
+    public void assertNotSealed() {
+        Assert.isFalse(sealed, 'SOQLContext "' + name + '" is sealed and cannot accept modification');
+    }
+
     // "System Mode" CRUD/FLS. Does not assert CRUD nor FLS.
     global SOQLContext systemCrudFLS() {
+        assertNotSealed();
         this.securityMode = RKSecurity.BYPASS_FLS_CRUD;
         this.enforceCrudFLS = false;
         return this;
     }
 
     // "Safe Mode" CRUD/FLS where any violation of either throws an error (i.e. non-silent, as opposed to filtering).
-    global SOQLContext strictCrudFLS() {
+    global SOQLContext strictCrudFls() {
+        assertNotSealed();
         this.securityMode = RKSecurity.ALL_OR_NONE;
+        this.enforceCrudFLS = true;
         return this;
     }
 
+    // Filters out CRUD and FLS violations without failing the query (filtered query proceeds):
+    global SOQLContext filterCrudFls() {
+        assertNotSealed();
+        this.securityMode = RKSecurity.FILTER_FLS_CRUD;
+        this.enforceCrudFLS = true;
+        return this;
+    }
+
+    // Throws on CRUD violations (query fails), but silently filters out FLS violations (filtered query proceeds):
+    global SOQLContext throwCrudFilterFls() {
+        assertNotSealed();
+        this.securityMode = RKSecurity.FILTER_FLS_THROW_CRUD;
+        this.enforceCrudFLS = true;
+        return this;
+    }
+
+    // Ignores all CRUD violations and FLS violations (no filtering, and query proceeds):
+    global SOQLContext bypassCrudFls() {
+        return systemCrudFLS();
+    }
+
+    // Throws on any CRUD or FLS violation (query fails):
     global SOQLContext strictSharing() {
+        assertNotSealed();
         this.sharingModel = new RKShare.WithPlatformSharing();
         return this;
     }
 
     // "System Mode" sharing applies "without sharing" on query execution:
     global SOQLContext systemSharing() {
+        assertNotSealed();
         // !! READ THE COMMENT ABOVE
         // The purpose of this method is to engage WithOUT Sharing - DO NOT change this to With Sharing:
         this.sharingModel = new RKShare.WithoutPlatformSharing(null);
@@ -96,12 +238,14 @@ global class SOQLContext {
 
     // "Custom Mode" sharing applies custom RKShare.AccessResover logic in a "without sharing" execution context:
     public SOQLContext customSharing(RKShare.AccessResolver customAccess) {
+        assertNotSealed();
         this.customAccess = customAccess;
         this.sharingModel = new RKShare.WithoutPlatformSharing(customAccess);
         return this;
     }
 
     global SOQLContext addRule(RestrictedSearch rule) {
+        assertNotSealed();
         searchRules.add(rule);
         return this;
     }
@@ -109,8 +253,13 @@ global class SOQLContext {
     // "Custom Mode" sharing applies custom RKShare.AccessResover logic in a "without sharing" execution context.
     // "designatedUser" should hold Id and Name fields:
     global SOQLContext delegatedSharing(User designatedUser) {
+        assertNotSealed();
         customSharing(new RKShare.DesignatedUserAccessResolver(recordAccessBypassTypes, designatedUser));
         return this;
+    }
+
+    global SObject[] query(String soql) {
+        return query(soql, null, new Object[]{});
     }
 
     global SObject[] query(String soql, Map<String, Object> namedBinds) {
@@ -147,7 +296,11 @@ global class SOQLContext {
         }
     }
 
-    global String getSafeQuery(String queryString, Map<String, Object> namedBinds, Object[] anonymousBinds, SOQLParser.LocalRebindPool rebindPool) {
+    // Returns the equivalent vanilla-SOQL query (can be run via Database.query or used to construct a QueryLocator)
+    // after asserting the security levels and rules specified by this SOQLContext - which may either throw error, or
+    // modify the resulting query:
+    global String getQuery(String queryString, Map<String, Object> namedBinds, Object[] anonymousBinds, 
+            SOQLParser.LocalRebindPool rebindPool) {
         // Works like startSystemMode(), but only acts like System mode with regard to record sharing, not CRUD/FLS:
         RKSecurity.SecuritySavepoint sp = new RKSecurity.SecuritySavepoint();
         try {

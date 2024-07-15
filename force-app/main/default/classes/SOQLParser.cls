@@ -4599,7 +4599,9 @@ start = start.addYears(startOffset);
                 // have a lvl at or above SimpleExpr (i.e. rhsPart.lvl <= 3):
                 if (rhsPart.lvl > LVL_SIMPLE) {
                     // parse error; expected relational or equality op to complete the condition; got unexpected operator
-                    mismatch(opTok, 'Expected field operator to follow field expression');
+                    //mismatch(opTok, 'Expected field operator to follow field expression');
+                    String fieldPathStr = rhsPart.toString(); // rhsPart is expected to be an instance of RefExpr
+                    mismatch(opTok, 'Expected a comparison operator to act on field reference ' + fieldPathStr);
                 }
                 
                 if (rhsPart.mergeType == MERGE_LOG_BIN_TERM) {

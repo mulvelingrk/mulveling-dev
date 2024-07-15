@@ -10,21 +10,47 @@ global without sharing class RestrictedSearches {
 
     global static SOQLContext getStrictPatientLookup() {
         // !! Note how this defaults to a fully strict-mode context when no applicable rule-based metadata matches were found:
-        return loadRuleBasedMetadataStrict('LWC - Strict Custom Lookup', Schema.Patient_Visit__c.SObjectType);
+        return loadRulesAtopSystemBaseDefaultStrict('LWC - Strict Custom Lookup', Schema.Patient_Visit__c.SObjectType);
     }
 
-    global static SOQLContext loadRuleBasedMetadataLax(String targetName, Schema.SObjectType targetObjectType) {
-        return loadRuleBasedMetadata(targetName, targetObjectType, SOQLCOntext.getDefaultSystemMode());
+    // Creates a new Ruled context layered atop "System Mode" when a metadata match was found, and defaulting to "System Mode"
+    // when no match was found:
+    global static SOQLContext loadRulesAtopSystemBaseDefaultSystem(String metadataTargetName, Schema.SObjectType targetObjectType) {
+        return loadRulesAtopSystemBase(metadataTargetName, targetObjectType, SOQLContext.newSystemMode());
     }
 
-    // If a strict-mode component didn't find any applicable Restricted_Search metadata match, its default 
-    // behavior enables the full weight of Salesforce's standard security model:
-    global static SOQLContext loadRuleBasedMetadataStrict(String targetName, Schema.SObjectType targetObjectType) {
-        return loadRuleBasedMetadata(targetName, targetObjectType, SOQLContext.getDefaultStrictMode());
+    // Creates a new Ruled context layered atop "System Mode" when a metadata match was found, and defaulting to "Strict Mode"
+    // when no match was found:
+    global static SOQLContext loadRulesAtopSystemBaseDefaultStrict(String metadataTargetName, Schema.SObjectType targetObjectType) {
+        return loadRulesAtopSystemBase(metadataTargetName, targetObjectType, SOQLContext.newStrictMode());
     }
 
-    global static SOQLContext loadRuleBasedMetadata(String targetName, 
-            Schema.SObjectType targetObjectType, SOQLContext defaultOnNoMatches) {
+    // Creates a new Ruled context layered atop "System Mode" when a metadata match was found, and defaulting to {defaultNoMatchesContext}
+    // when no match was found. If {defaultNoMatchesContext} is null, then an error is thrown when no metadata match is found:
+    global static SOQLContext loadRulesAtopSystemBase(String metadataTargetName, 
+            Schema.SObjectType targetObjectType, SOQLContext defaultNoMatchesContext) {
+        return loadRulesMetadata(metadataTargetName, targetObjectType, SOQLContext.newSystemMode(), defaultNoMatchesContext);
+    }
+
+    // Creates a new Ruled context layered atop "Strict Mode" when a metadata match was found, and failing (assertion error)
+    // when no match was found:
+    global static SOQLContext loadRulesAtopStrictBase(String metadataTargetName, 
+            Schema.SObjectType targetObjectType, SOQLContext defaultNoMatchesContext) {
+        return loadRulesMetadata(metadataTargetName, targetObjectType, SOQLContext.newStrictMode(), null);
+    }
+
+    // Creates a new Ruled context layered atop "Safe Mode" when a metadata match was found, and failing (assertion error)
+    // when no match was found:
+    global static SOQLContext loadRulesAtopSafeBase(String metadataTargetName, 
+            Schema.SObjectType targetObjectType, SOQLContext defaultNoMatchesContext) {
+        return loadRulesMetadata(metadataTargetName, targetObjectType, SOQLContext.newSafeMode(), null);
+    }
+
+    // Creates a new Ruled context layered atop {ruledBaseContext} when a metadata match was found, and defaulting to 
+    // {defaultNoMatchesContext} when no match was found:
+    global static SOQLContext loadRulesMetadata(String metadataTargetName, 
+            Schema.SObjectType targetObjectType, SOQLContext ruledBaseContext, SOQLContext defaultNoMatchesContext) {
+        
         final String objectApiName = '' + targetObjectType;
         String[] generalUserScopes = new String[]{ 'All Users' };
         if (UserInfo.getUserType() == 'Guest') {
@@ -34,7 +60,7 @@ global without sharing class RestrictedSearches {
             SELECT MasterLabel, DeveloperName, Target__c, Query_Mode__c, User_Scope__c, Object_Type__c, Minimum_Matches__c
             FROM Restricted_Search__mdt 
             WHERE Object_Type__r.QualifiedApiName = :objectApiName 
-                AND Target__c = :targetName
+                AND Target__c = :metadataTargetName
                 AND User_Scope__c IN :generalUserScopes
                 // !! OR conditions are not currently supported on Metadata queries. WTF?! Who at SF was asleep at the 
                 // wheel when they built this crap. Scuttling "Specific User" facility for now...
@@ -68,9 +94,12 @@ global without sharing class RestrictedSearches {
         }
 
         if (bestMatch != null) {
-            SOQLContext ruledContext = new SOQLContext(
-                '' + Restricted_Search__mdt.Schema.SObjectType + '.' + bestMatch.DeveloperName,
-                'Restricted Search [' + bestMatch.MasterLabel + ']');
+            SOQLContext ruledContext = ruledBaseContext != null 
+                ? ruledBaseContext.fork(
+                    '' + Restricted_Search__mdt.Schema.SObjectType + '.' + bestMatch.DeveloperName, 
+                    'Restricted Search [' + bestMatch.MasterLabel + ']') 
+                : SOQLContext.newSystemMode();
+            
             SOQLContext.RestrictedToExactMatches rule = 
                 new SOQLContext.RestrictedToExactMatches(bestMatch.MasterLabel, targetObjectType);
             ruledContext.addRule(rule);
@@ -99,7 +128,10 @@ global without sharing class RestrictedSearches {
 
             return ruledContext;
         }
-        return defaultOnNoMatches;
+
+        Assert.isNotNull(defaultNoMatchesContext, 'No Restricted Search definition found for "' + 
+            metadataTargetName + '" on Object ' + targetObjectType);
+        return defaultNoMatchesContext;
     }
 
     private static double rankSpecificity(Restricted_Search__mdt candidate) {
