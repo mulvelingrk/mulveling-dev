@@ -165,26 +165,32 @@ public with sharing class RKSecurity {
         String[] crud = new String[]{};
         for (Schema.sObjectType sobjType : CRUDMissMap.keySet()) {
             Integer accessBits = CRUDMissMap.get(sobjType);
-            crud.add(sobjType + ' [' + printAccess(accessBits) + ']');
+            crud.add(sobjType + '[' + printAccess(accessBits) + ']');
         }
         if (crud.size() > 0) {
             parts.add('Missing access for Object' + (crud.size() == 1 ? '' : 's') + ': ' + 
                 String.join(crud, ', '));
         }
+        Integer numFLS =  0;
         for (Schema.sObjectType sobjType : FLSMissMap.keySet()) {
             Map<Schema.sObjectField, Integer> fieldMap = FLSMissMap.get(sobjType);
             String[] fls_obj = new String[]{};
             for (Schema.sObjectField field : fieldMap.keySet()) {
                 Integer accessBits = fieldMap.get(field);
-                fls_obj.add(field + ' [' + printAccess(accessBits) + ']');
+                fls_obj.add(field + '[' + printAccess(accessBits) + ']');
+                numFLS++;
             }
-            parts.add('Missing access for Object ' + sobjType + ' field' + (fls_obj.size() == 1 ? '' : 's') + ': ' + 
+            parts.add('Missing access for ' + sobjType + ' field' + (fls_obj.size() == 1 ? '' : 's') + ': ' + 
                 String.join(fls_obj, ', '));
         }
         if (parts.size() > 0) {
             String msg = String.join(parts, '. ');
-            AuraHandledException e = new AuraHandledException(msg);
+            //AuraHandledException e = new AuraHandledException(msg);
+            //e.setMessage(msg);
+            SOQLContext.AccessException e = new SOQLContext.AccessException(msg);
             e.setMessage(msg);
+            e.numCRUD = crud.size();
+            e.numFLS = numFLS;
             throw e;
         }
     }
@@ -1730,9 +1736,15 @@ public with sharing class RKSecurity {
         if (hasRecordTypes) {
             sels.addAll(new String[]{ 'RecordTypeId', 'RecordType.DeveloperName', 'RecordType.Name' });
         }
-        Boolean isCustomObj = sobjDesc.isCustom();
-        if (isCustomObj) {
+
+        // Custom Metadata Objects ending in __mdt:
+        if (sobjDesc.getName().endsWithIgnoreCase('__mdt')) {
+            sels.addAll(new String[]{ 'MasterLabel', 'DeveloperName' });
+        // Custom Objects ending in __c:
+        } else if (sobjDesc.isCustom()) {
             sels.addAll(new String[]{ 'Name', 'CreatedDate' });
+        // Specializations for Standard Objects:
+        // TODO: these would be better defined in an external resource file...
         } else {
             switch on ('' + sobjType) {
                 when 'Contact' {

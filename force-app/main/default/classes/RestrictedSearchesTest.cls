@@ -28,12 +28,15 @@ private class RestrictedSearchesTest {
 
         //SObject foo = Database.query('SELECT Id FROM Contact WHERE Foo > 1');
         //String soqlTest = SOQLContext.newStrictMode().getQuery(
-        //        'SELECT Name, FIELDSET(Contact_FS_1) FROM Contact', null, AllNullBinds, null);
+        //        'SELECT Name, FIELDSET(Contact_FS_1), GenderIdentity FROM Contact', null, AllNullBinds, null);
         //Assert.areEqual('Foo', soqlTest);
 
         //String soqlTest = context.getQuery(
         //        'SELECT * FROM ' + MockClaimType + ' WHERE Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ?', null, AllNullBinds, null);
         //Assert.areEqual('Foo', soqlTest);
+
+        //Integer nmeta = SOQLContext.newSystemMode().query('SELECT * FROM Restricted_Search__mdt WHERE Target__c = ? AND Object_Type__c = ?', new Object[]{ 'LWC - Strict Custom Lookup', '' + MockClaimType }).size();
+        //Assert.areEqual(2, nmeta);
 
         // Success: meets basic restriction requirements, no more or less:
         String soql = assertSuccess('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ?', 
@@ -43,40 +46,40 @@ private class RestrictedSearchesTest {
             'SELECT Id FROM ' + MockClaimType + ' WHERE Mock_Claimant_Last_Name__c = \'Coolio\' AND Claimant_City__c = \'Compton\' AND Date_Claimant_Born__c = 1980-04-03', 
             soql);
 
-        // Success: superfluous groupings should not invalidate the query:
+        // Success: has the 3 required match terms, AND is the top-level condition, and the superfluous groupings do not confuse the rules engine:
         assertSuccess('(Mock_Claimant_Last_Name__c = ? AND (Claimant_City__c = ? AND Date_Claimant_Born__c = ?))');
 
-        // Success: extra match:
+        // Success: extra 4th match term (AND) is OK:
         assertSuccess('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ? AND Cause__c = ?');
 
-        // Success: extra freestyle match:
+        // Success: extra freestyle term is allowed (AND):
         assertSuccess('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ? AND Date_Hired__c = ?');
 
-        // Success: freestyle matches can be in OR and NOT as long as they're under a top-level AND:
+        // Success: freestyle terms can be in nested OR and NOT conditions, as long as they're all under a top-level AND:
         //assertSuccess('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ? AND (Date_Hired__c = ? OR NOT Claimant_Country__c = ?)');
 
-        // Violation: match condition not allowed in OR condition:
+        // Violation: match term not allowed in OR condition:
         assertViolation('Mock_Claimant_Last_Name__c = ? AND (Claimant_City__c = ? OR Date_Claimant_Born__c = ?)');
 
-        // Violation: top level condition is OR:
+        // Violation: top level of WHERE condition cannot be OR:
         assertViolation('Mock_Claimant_Last_Name__c = ? OR Claimant_City__c = ? OR Date_Claimant_Born__c = ?');
 
-        // Violation: match condition not allowed in NOT condition:
+        // Violation: match term not allowed in NOT condition:
         assertViolation('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND NOT Date_Claimant_Born__c = ?');
 
-        // Violation: required match condition Mock_Claimant_Last_Name__c is missing:
+        // Violation: required match term Mock_Claimant_Last_Name__c is missing:
         assertViolation('Cause__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ?');
 
-        // Violation: does not meet minimum # of matches:
+        // Violation: only 2 match terms; does not meet minimum of 3:
         assertViolation('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ?');
 
-        // Violation: unsupported ">" operator:
+        // Violation: match term uses disallowed ">" operator:
         assertViolation('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ? AND Date_Hired__c > ?');
 
-        // Violation: unsupported "LIKE" operator:
+        // Violation: match term uses disallowed "LIKE" operator:
         assertViolation('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ? AND Cause LIKE "%"');
 
-        // Violation: unsupported "contains" operator:
+        // Violation: match term uses disallowed "contains" operator:
         assertViolation('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ? AND Cause contains "foo"');
 
         // Violation: unresolved named bind parameter ":foo":

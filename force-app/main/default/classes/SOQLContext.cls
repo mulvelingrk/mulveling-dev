@@ -1,14 +1,24 @@
 /*
  * Mike Ulveling
  * 
- * Closes the loop on our most useful SOQLParser / RKSecurity / RKShare features, and adds configurable Search Restrictions.
+ * Closes the loop on our most useful SOQLParser / RKSecurity / RKShare features, and adds configurable Query Rules.
  * Queries should be issued thourgh a properly crafted SOQLContext instance, rather than via Database.query or inline SOQL 
  * queries (Apex bracket [] syntax).
  */
 global class SOQLContext {
+
+    global class AccessException extends Exception {
+        global Integer numCRUD {get; public set;}
+        global Integer numFLS {get; public set;}
+    }
+ 
     static SOQLContext DefaultSystemMode;
     static SOQLContext DefaultSafeMode;
     static SOQLContext DefaultStrictMode;
+
+    // =====================================================================================================================
+    // Core SOQLContext API:
+    // =====================================================================================================================
 
     // Static Convenience Methods For Issuing Queries:
 
@@ -125,7 +135,8 @@ global class SOQLContext {
     RKShare.SecurityModel sharingModel;
 
     @testVisible
-    RestrictedSearch[] searchRules = new RestrictedSearch[]{};
+    //RestrictedSearch[] searchRules = new RestrictedSearch[]{};
+    QueryRule rootRule;
     
     // New SOQLContext defaults to the following behaviors:
     // * Strict CRUD enforcement (throw error).
@@ -157,7 +168,8 @@ global class SOQLContext {
         forked.recordAccessBypassTypes = recordAccessBypassTypes.clone();
         forked.customAccess = customAccess;
         forked.sharingModel = sharingModel;
-        forked.searchRules = searchRules.clone();
+        //forked.searchRules = searchRules.clone();
+        forked.rootRule = rootRule != null ? rootRule.clone() : null;
         return forked;
     }
 
@@ -244,11 +256,28 @@ global class SOQLContext {
         return this;
     }
 
-    global SOQLContext addRule(RestrictedSearch rule) {
+    global SOQLContext setRule(QueryRule rule) {
         assertNotSealed();
-        searchRules.add(rule);
+        Assert.isNull(rootRule, 'Root-Rule had already been set, and cannot be redefined to ' + rule.getFailPath());
+        Assert.isTrue(rule.isRoot == true || rule.isRoot == null && rule.parent == null, 
+            'Context cannot accept rule ' + rule.getFailPath() + ' because it is not a root-level rule');
+        rule.isRoot = true;
+        rule.hostContext = this;
+        this.rootRule = rule;
         return this;
     }
+
+    global QueryRuleSet defineRuleSet(String name) {
+        QueryRuleSet newRuleSet = new QueryRuleSet(name);
+        setRule(newRuleSet);
+        return newRuleSet;
+    }
+
+    //global SOQLContext addRule(RestrictedSearch rule) {
+    //    assertNotSealed();
+    //    searchRules.add(rule);
+    //    return this;
+    //}
 
     // "Custom Mode" sharing applies custom RKShare.AccessResover logic in a "without sharing" execution context.
     // "designatedUser" should hold Id and Name fields:
@@ -288,12 +317,42 @@ global class SOQLContext {
                     .vals(anonymousBinds)
                     .resolve(enforceCrudFLS);
             
-            assertSearchRestrictions(soql)
+            assertRules(soql)
                 .bind();
             return sharingModel.query(soql.ser(false), rebindPool);
         } finally {
             RKSecurity.restore(sp);
         }
+    }
+
+    global String getQuery(String queryString) {
+        return getQuery(queryString, AllNullBinds);
+    }
+
+    global String getQuery(String queryString, Object val1) {
+        return getQuery(queryString, new Object[]{ val1, null, null, null, null });
+    }
+    
+    global String getQuery(String queryString, Object val1, Object val2) {
+        return getQuery(queryString, new Object[]{ val1, val2, null, null, null });
+    }
+    
+    global String getQuery(String queryString, Object val1, Object val2, Object val3) {
+        return getQuery(queryString, new Object[]{ val1, val2, val3, null, null  });
+    }
+
+    global String getQuery(String queryString, Object val1, Object val2, Object val3, Object val4) {
+        return getQuery(queryString, new Object[]{ val1, val2, val3, val4, null });
+    }
+
+    global String getQuery(String queryString, Object val1, Object val2, Object val3, Object val4, Object val5) {
+        return getQuery(queryString, new Object[]{ val1, val2, val3, val4, val5 });
+    }
+
+    global String getQuery(String queryString, Object[] anonymousBinds) {
+        Map<String, Object> emptyNamedBinds = new Map<String, Object>();
+        SOQLParser.LocalRebindPool nullRebinds = null;
+        return getQuery(queryString, emptyNamedBinds, anonymousBinds, nullRebinds);
     }
 
     // Returns the equivalent vanilla-SOQL query (can be run via Database.query or used to construct a QueryLocator)
@@ -320,7 +379,7 @@ global class SOQLContext {
                 .vals(anonymousBinds)
                 .resolve(enforceCrudFLS);
             
-            assertSearchRestrictions(soql)
+            assertRules(soql)
                 .bind();
             //return sharingModel.query(soql.ser(false), rebindPool);
             return soql.ser(false);
@@ -329,7 +388,7 @@ global class SOQLContext {
         }
     }
 
-    // throws RestrictedSearchException:
+    // Throws RuleViolationException:
     global SOQLParser.SOQL validate(String queryString) {
         // Works like startSystemMode(), but only acts like System mode with regard to record sharing, not CRUD/FLS:
         RKSecurity.SecuritySavepoint sp = new RKSecurity.SecuritySavepoint();
@@ -343,118 +402,138 @@ global class SOQLContext {
                 new SOQLParser.SOQL(queryString)
                     .resolve(enforceCrudFLS);
 
-            return assertSearchRestrictions(soql);
+            return assertRules(soql);
         } finally {
             RKSecurity.restore(sp);
         }
     }
 
-    SOQLParser.SOQL assertSearchRestrictions(SOQLParser.SOQL soql) {
-        for (RestrictedSearch rule : searchRules) {
-            rule.reset();
-            rule.start(soql);
-            if (soql.whereCond != null) {
-                // Throws RestrictedSearchException:
-                soql.whereCond.traverse(rule);
-            }
-            rule.finish(soql);
+    // Throws RuleViolationException, RuleConfigurationException:
+    private SOQLParser.SOQL assertRules(SOQLParser.SOQL soql) {
+        if (rootRule != null) {
+            rootRule.init();
+            rootRule.assert(soql);
         }
         return soql;
     }
 
-    global virtual class RestrictedSearch extends SOQLParser.ASTVisitor {
+    // =====================================================================================================================
+    // ASTVisitor Implementations:
+    // =====================================================================================================================
+
+    global class SOQLVisitorConfigurationException extends Exception {
+        global SOQLVisitor visitor;
+    }
+    
+    global class SOQLVisitorViolationException extends Exception {
+        global SOQLVisitor visitor;
+    }
+    
+    global virtual class SOQLVisitor extends SOQLParser.ASTVisitor {
+        global Schema.SObjectType targetType {get; private set;}
         global String name {get; private set;}
-        global Schema.SObjectType allowedType {get; private set;}
-
-        global RestrictedSearch(String name, Schema.SObjectType allowedType) {
+    
+        global SOQLVisitor(Schema.SObjectType targetType, String name) {
+            this.targetType = targetType;
             this.name = name;
-            this.allowedType = allowedType;
         }
-
-        // Throws RestrictedSearchException:
+    
+        global virtual override void reset() {
+            super.reset();
+        }
+    
+        // Throws SOQLVisitorConfigurationException:
+        global void throwConfig(String msg) {
+            SOQLVisitorConfigurationException e = new SOQLVisitorConfigurationException(msg);
+            e.visitor = this;
+            e.setMessage(msg);
+            throw e;
+        }
+    
+        // Throws SOQLVisitorViolationException:
+        global void throwViolation(String msg) {
+            SOQLVisitorViolationException e = new SOQLVisitorViolationException(msg);
+            e.visitor = this;
+            e.setMessage(msg);
+            throw e;
+        }
+    
         global virtual void start(SOQLParser.SOQL soql) {}
-
-        // Throws RestrictedSearchException:
+    
         global virtual void finish(SOQLParser.SOQL soql) {}
-
-        global virtual void violation(String message) {
-            restrictedSearchError(this, 'Restricted Search Violation [' + name + ']: ' + message);
-        }
-
-        global virtual void configError(String message) {
-            restrictedSearchError(this, 'Restricted Search Configuration [' + name + ']: ' + message);
-        }
     }
 
-    global class RestrictedSearchException extends Exception {
-        global RestrictedSearch rule;
+    public abstract class MatchElmt {
+        String path;
     }
 
-    global static void restrictedSearchError(RestrictedSearch rule, String message) {
-        RestrictedSearchException err = new RestrictedSearchException(message);
-        err.rule = rule;
-        err.setMessage(message);
-        throw err;
+    public class ExactMatchElmt extends MatchElmt {
+        Boolean isRequired = true;
     }
 
-    global class RestrictedToExactMatches extends RestrictedSearch {
+    public class FreestyleElmt extends MatchElmt {
+        Boolean allowNested;
+        Boolean allowAnyOp;
+    }
+    
+    global class EnforceSearchTermsVisitor extends SOQLVisitor {
         Map<String, ExactMatchElmt> matchElmtsByPathLC = new Map<String, ExactMatchElmt>();
         Map<String, FreestyleElmt> freeElmtsByPathLC = new Map<String, FreestyleElmt>();
         Integer minimumMatches;
         Integer matchesCounter;
         // As we encounter match and freestyle elements in a parsed WHERE clause, they are logged here:
         Map<String, SOQLParser.ASTSimpleCond> parsedElmtsByPathLC = new Map<String, SOQLParser.ASTSimpleCond>();
-
-        global RestrictedToExactMatches(String name, Schema.SObjectType allowedType) {
-            super(name, allowedType);
+    
+        global EnforceSearchTermsVisitor(Schema.SObjectType targetType, String name) {
+            super(targetType, name);
         }
-
+    
+        global virtual override void reset() {
+            super.reset();
+            matchesCounter = 0;
+        }
+    
         // This method can also be used to fire start-up validations (e.g. invalid configurations):
         global override void start(SOQLParser.SOQL soql) {
             this.matchesCounter = 0;
             this.parsedElmtsByPathLC = new Map<String, SOQLParser.ASTSimpleCond>();
-            if (soql.resTable != allowedType) {
-                violation('Illegal "FROM ' + soql.fromEntity.lexeme + '" clause; only "FROM ' + allowedType + '" is allowed');
+            if (soql.resTable != targetType) {
+                throwViolation('Illegal "FROM ' + soql.fromEntity.lexeme + '" clause; only "FROM ' + 
+                    targetType + '" is allowed');
             }
             if (soql.whereCond == null) {
-                violation('WHERE clause is required');
+                throwViolation('WHERE clause is required');
             }
             if (soql.sorts != null && soql.sorts.size() > 0) {
-                violation('ORDER BY clause is not allowed');
+                throwViolation('ORDER BY clause is not allowed');
             }
             if (soql.nested != null && soql.nested.size() > 0) {
-                violation('SELECT of child relationships is not allowed');
+                throwViolation('SELECT of child relationships is not allowed');
             }
             if (matchElmtsByPathLC.keySet().size() == 0) {
-                configError('At least 1 match must be defined');
+                throwViolation('At least 1 match must be defined');
             }
             if (minimumMatches == null || minimumMatches < 1) {
-                configError('Minimum matches must be a positive integer; got ' + minimumMatches);
-            }
-            for (String pathLC : freeElmtsByPathLC.keySet()) {
-                if (matchElmtsByPathLC.containsKey(pathLC)) {
-                    configError('Freestyle element "' + freeElmtsByPathLC.get(pathLC).path + 
-                        '" conflicts with match element of same path');
-                }
+                throwViolation('Minimum # of matches must be set to a positive integer; got ' + minimumMatches);
             }
         }
-
+    
         global override void finish(SOQLParser.SOQL soql) {
             // Verify we got all match elements that were flagged as required:
             for (ExactMatchElmt matchElmt : matchElmtsByPathLC.values()) {
                 if (matchElmt.isRequired) {
                     if (!parsedElmtsByPathLC.containsKey(matchElmt.path.toLowerCase())) {
-                        violation('Required match condition "' + matchElmt.path + '" is not present');
+                        throwViolation('Required match term "' + matchElmt.path + '" is not present');
                     }
                 }
             }
             // Verify we got the minimum number of matches:
             Integer effectiveMin = getEffectiveMinMatches();
             if (matchesCounter < effectiveMin) {
-                violation('Expected at least ' + effectiveMin + ' match conditions; got ' + matchesCounter);
+                throwViolation('Expected at least ' + effectiveMin + ' match terms; got ' + matchesCounter);
             }
         }
-
+    
         //global override void onStart(ASTCond root) {}
         
         global override void onCond(ASTCond cond) {
@@ -467,7 +546,7 @@ global class SOQLContext {
                     }
                 }
                 if (parentAnd == null) {
-                    violation((cond.isOr() ? 'OR' : 'NOT') + ' condition must be nested under a parent AND');
+                    throwViolation((cond.isOr() ? 'OR' : 'NOT') + ' condition must be nested under a parent AND');
                 }
             } else if (cond.isSimple()) {
                 // These structure flags tell us where this simple condition resides within the query's 
@@ -483,7 +562,6 @@ global class SOQLContext {
                     //if (parent.isGroup()) {
                     //    continue;
                     //} else {
-                    
                     isTop = false;
                     // If it's under an OR or NOT then it can only qualify for "freestyle" elements. 
                     // Set both structure flags false, and we're done:
@@ -504,10 +582,9 @@ global class SOQLContext {
                             continue;
                         }
                     }
-                    
                     //}
                 }
-
+    
                 SOQLParser.ASTSimpleCond simpleCond = (SOQLParser.ASTSimpleCond) cond;
                 String path = simpleCond.ref.getBestPath();
                 ExactMatchElmt matchElmt = matchElmtsByPathLC.get(path.toLowerCase());
@@ -515,17 +592,17 @@ global class SOQLContext {
                 if (matchElmt != null) {
                     //if (!isTop && !isTopAND) {
                     if (!(isTop || allParentsAND)) {
-                        violation('Match condition "' + path + 
+                        throwViolation('Match term "' + path + 
                             //'" cannot be nested deeper than a top-level AND condition');
-                            '" cannot reside within OR or NOT conditions');
+                            '" may not bind to OR or NOT');
                     } else if (simpleCond.op.lexeme != '=') {
-                        violation('Match condition "' + path + '" is only allowed "="; got "' + 
+                        throwViolation('Match term "' + path + '" is only allowed "="; got "' + 
                             simpleCond.op.lexeme + '"');
                     } else if (simpleCond.val.isList()) {
-                        violation('Match condition "' + path + 
+                        throwViolation('Match term "' + path + 
                             '" is only allowed simple match values; got list value');
                     } else if (simpleCond.val.isUnboundNamedParam()) {
-                        violation('Match condition "' + path + 
+                        throwViolation('Match term "' + path + 
                             '" is not allowed unresolved named bind ":' + 
                             simpleCond.val.scalar.param.lexeme + '"');
                     } else {
@@ -535,37 +612,37 @@ global class SOQLContext {
                     freeElmt = freeElmtsByPathLC.get(path.toLowerCase());
                     if (freeElmt != null) {
                         if (freeElmt.allowNested != true && !isTop && !isTopAND) {
-                            violation('Freestyle condition "' + path + 
+                            throwViolation('Freestyle term "' + path + 
                                 '" cannot be nested deeper than a top-level AND condition');
                         } else if (freeElmt.allowAnyOp != true && simpleCond.op.lexeme != '=') {
-                            violation('Freestyle condition "' + path + 
+                            throwViolation('Freestyle term "' + path + 
                                 '" is only allowed the "=" operator; got "' + simpleCond.op.lexeme + '"');
                         }
                     // Else we have an undefined reference path, which is a violation!
                     } else {
-                        violation('Condition "' + path + 
-                            '" has not been defined as either an exact-match or freestyle element');
+                        throwViolation('Field reference "' + path + 
+                            '" has not been defined as either match term or freestyle term');
                     }
                 }
-
+    
                 MatchElmt parsedElmt = (MatchElmt) matchElmt ?? (MatchElmt) freeElmt;
                 if (parsedElmt != null) {
                     SOQLParser.ASTSimpleCond duplicateCond = 
                         parsedElmtsByPathLC.put(parsedElmt.path.toLowerCase(), simpleCond);
                     // Prevent duplicate instances of the same match element in a WHERE clause:
                     if (duplicateCond != null && parsedElmt instanceof ExactMatchElmt) {
-                        violation('Match condition "' + parsedElmt.path + 
+                        throwViolation('Match term "' + parsedElmt.path + 
                             '" cannot be used more than once');
                     }
                 }
             }
         }
-
+    
         //global override void onLeaveCond(ASTCond cond) {}
         //global override void onValue(ASTValue val) {}
         //global override void onReference(ASTReference ref) {}
         //global override void onFinish(ASTCond root) {}
-
+    
         global Integer getEffectiveMinMatches() {
             if (minimumMatches != null) {
                 return minimumMatches;
@@ -581,12 +658,12 @@ global class SOQLContext {
             }
             return effectiveMin;
         }
-
-        global RestrictedToExactMatches setMinimumMatches(Integer minMatches) {
+    
+        global EnforceSearchTermsVisitor setMinimumMatches(Integer minMatches) {
             this.minimumMatches = minMatches;
             return this;
         }
-
+    
         // Specifies an exact-match field. 
         // 1. A field condition to this path may only exist at either the conditon's top level, or 
         //    nested under AND's and Groups ONLY (no OR's or NOT's). Its appearance at other structural 
@@ -599,17 +676,22 @@ global class SOQLContext {
         // 5. A field condition to this path, and adherent to above rules, will increment the 
         //    "matchesCount" counter by 1. If, after processing the entire WHERE condition, 
         //    (matchesCounter < minimumMatches), this rule will fail.
-        global RestrictedToExactMatches addExactMatchElement(String path, Boolean isRequired) {
+        global EnforceSearchTermsVisitor addExactMatchElement(String path, Boolean isRequired) {
             ExactMatchElmt matchElmt = new ExactMatchElmt();
             matchElmt.path = path;
             matchElmt.isRequired = isRequired == true;
-            ExactMatchElmt oldElmt = matchElmtsByPathLC.put(path.toLowerCase(), matchElmt);
+            String pathLC = path.toLowerCase();
+            ExactMatchElmt oldElmt = matchElmtsByPathLC.put(pathLC, matchElmt);
             if (oldElmt != null) {
-                configError('Match element "' + path + '" was previously defined');
+                throwConfig('Match term "' + path + '" was previously defined');
+            }
+            if (freeElmtsByPathLC.containsKey(pathLC)) {
+                throwConfig('Match term "' + matchElmt.path + 
+                    '" clashes with existing freestyle term of same path');
             }
             return this;
         }
-
+    
         // Specifies an optional condition field. This path must NOT match that of any "exact match" 
         // element. A field condition to this path may exist at any level, with any operator. However, the 
         // basic ruleset for RestrictedByExactMatches still applies:
@@ -619,29 +701,531 @@ global class SOQLContext {
         //    values are not allowed, and will fail this rule. 
         // 4. Any field condition not to a path for either "exact match" or "freestyle" elements will fail 
         //    this rule.
-        global RestrictedToExactMatches addFreestyleElement(String path, Boolean allowNested, Boolean allowAnyOp) {
+        global EnforceSearchTermsVisitor addFreestyleElement(String path, Boolean allowNested, Boolean allowAnyOp) {
             FreestyleElmt freeElmt = new FreestyleElmt();
             freeElmt.path = path;
             freeElmt.allowNested = allowNested == true;
             freeElmt.allowAnyOp = allowAnyOp == true;
-            FreestyleElmt oldElmt = freeElmtsByPathLC.put(path.toLowerCase(), freeElmt);
+            String pathLC = path.toLowerCase();
+            FreestyleElmt oldElmt = freeElmtsByPathLC.put(pathLC, freeElmt);
             if (oldElmt != null) {
-                configError('Freestyle element "' + path + '" was previously defined');
+                throwConfig('Freestyle term "' + path + '" was previously defined');
+            }
+            if (matchElmtsByPathLC.containsKey(pathLC)) {
+                throwConfig('Freestyle term "' + freeElmt.path + 
+                    '" clashes with existing match term of same path');
             }
             return this;
         }
     }
 
-    public abstract class MatchElmt {
+    // =====================================================================================================================
+    // QueryRule and QueryRuleSet:
+    // =====================================================================================================================
+    
+    global class RuleConfigurationException extends Exception {
+        global QueryRule rule;
+    }
+
+    global class RuleViolationException extends Exception {
+        global QueryRule rule;
+    }
+    
+    global class MetadataRuleUndefinedException extends Exception {
+        global Schema.SObjectType targetType;
+        global String targetName;
+    }
+    
+    global static void ruleViolation(QueryRule rule, String message) {
+        String fullMessage =  headeredMessage(rule, message);
+        RuleViolationException err = new RuleViolationException(fullMessage);
+        err.setMessage(fullMessage);
+        err.rule = rule;
+        throw err;
+    }
+    
+    global static void configError(QueryRule rule, String message) {
+        String fullMessage = headeredMessage(rule, message);
+        RuleConfigurationException err = new RuleConfigurationException(fullMessage);
+        err.setMessage(fullMessage);
+        err.rule = rule;
+        throw err;
+    }
+    
+    global static void metadataUndefined(QueryRule rule, String message) {
+        String fullMessage = headeredMessage(rule, message);
+        MetadataRuleUndefinedException err = new MetadataRuleUndefinedException(fullMessage);
+        err.setMessage(fullMessage);
+        //err.rule = rule;
+        throw err;
+    }
+    
+    global static String headeredMessage(QueryRule rule, String message) {
+        String[] pathParts = rule.getFailPath();
+        String pathDescrip = '[' + (pathParts.size() == 0 ? 'Anonymous Rule' : String.join(pathParts, '][')) + ']';
+        return pathDescrip + ': ' + message;
+    }
+
+    global virtual class QueryRule {
+        public Boolean isRoot = null;
+        public String header;
+        public QueryRule parent;
+        public Boolean initialized = false;
+    
+        // The following are utilized only by root rules:
+        public MetadataRule[] registeredMetadata = new MetadataRule[]{};
+        public Schema.SObjectType registeredTargetType;
+        SOQLContext hostContext;
+    
+        public QueryRule() {
+            this(null);
+        }
+    
+        public QueryRule(String header) {
+            this.header = header;
+        }
+    
+        public void registerMetadata(MetadataRule meta) {
+            if (this.isRoot == false) {
+                configError(this, 'Only a Root-Rule can register metadata');
+            }
+            // Once a rule acts as a registry, it must be flagged as root and can no longer accept a parent:
+            this.isRoot = true;
+            registeredMetadata.add(meta);
+        }
+    
+        public void registerTargetType(Schema.SObjectType targetType) {
+            if (targetType == null) {
+                configError(this, 'Cannot register target type null');
+            } else if (this.isRoot == false) {
+                configError(this, 'Only a Root-Rule can register target type');
+            }
+            // Once a rule acts as a registry, it must be flagged as root and can no longer accept a parent:
+            this.isRoot = true;
+            if (registeredTargetType != null && registeredTargetType != targetType) {
+                configError(this, 'Target type ' + targetType + 
+                    ' clashes with previously registered type ' + registeredTargetType);
+            }
+            this.registeredTargetType = targetType;
+        }
+
+        global SOQLContext context() {
+            QueryRule root = getRoot();
+            Assert.isNotNull(root.hostContext, getFailPath() + ' does not have a host context');
+            return root.hostContext;
+        }
+    
+        // Throws MetadataRuleUndefinedException
+        global virtual Boolean init() {
+            if (initialized != true) {
+                initialized = true;
+                if (parent == null) {
+                    this.isRoot = true;
+                }
+    
+                if (isRoot && registeredMetadata.size() > 0) {
+                    if (registeredTargetType == null) {
+                        // This should not typically be reachable, since the call to add & register the metadata should have 
+                        // thrown a config error (for this same reason) at that time: 
+                        configError(this, 'Cannot initialize rule metadata without defining a target type');
+                    }
+                    // Load and resolve all registeredMetadata, setting the results on each corresponding MetadataRule.meta:
+                    final String targetObjectApi = '' + registeredTargetType;
+                    String[] generalUserScopes = new String[]{ 'All Users' };
+                    if (UserInfo.getUserType() == 'Guest') {
+                        generalUserScopes.add('Guest Users');
+                    }
+                    String[] targetNames = new String[]{};
+                    for (MetadataRule mrule: registeredMetadata) {
+                        targetNames.add(mrule.targetName);
+                    }
+                    Restricted_Search__mdt[] candidateRows = [ 
+                        SELECT MasterLabel, DeveloperName, Object_Type__r.QualifiedApiName, Target__c, Query_Mode__c, 
+                            User_Scope__c, Object_Type__c, Minimum_Matches__c
+                        FROM Restricted_Search__mdt 
+                        WHERE Object_Type__r.QualifiedApiName = :targetObjectApi
+                            //AND Target__c IN :targetNames
+                            AND DeveloperName IN :targetNames
+                            AND User_Scope__c IN :generalUserScopes
+                            // !! OR conditions are not currently supported on Metadata queries. WTF?! Who at SF was asleep at the 
+                            // wheel when they built this crap. Scuttling "Specific User" facility for now...
+                            //AND (User_Scope__c IN :generalUserScopes
+                            //    OR (User_Scope__c = 'Specific User' AND Specific_User_Id__c = :UserInfo.getUserId()))
+                    ];
+    
+                    Map<String, MetadataRule> metaRulesByDevName = new Map<String, MetadataRule>();
+                    for (MetadataRule mrule : registeredMetadata) {
+                        // If we find multiple qualifying metadata matches, rank them first by the MOST specific match criteria, 
+                        // and then by the LEAST restrictive search rules:
+                        Restricted_Search__mdt bestMatchRow;
+                        double bestMatchRank = -1;
+                        for (Restricted_Search__mdt candidate: candidateRows) {
+                            //if (candidate.Target__c != mrule.targetName) {
+                            if (candidate.DeveloperName != mrule.targetName) {
+                                continue;
+                            }
+                            double rank = rankSpecificity(candidate);
+                            if (rank > bestMatchRank) {
+                                bestMatchRow = candidate;
+                                bestMatchRank = rank;
+                            }
+                            // TODO: optionally, we can throw a configError (Ambiguous Definition) if we get 2 or more candidates 
+                            // with the same rank...
+                        }
+    
+                        if (bestMatchRow != null) {
+                            metaRulesByDevName.put(bestMatchRow.DeveloperName, mrule);
+                            mrule.metaRow = bestMatchRow;
+                        } else {
+                            metadataUndefined(this, 'Metadata rule not defined for [' + mrule.targetName + 
+                                '] on ' + registeredTargetType);
+                        }
+                    }
+    
+                    // Query related child fields metadata:
+                    for (Restricted_Search_Field__mdt fieldRow : [ 
+                            SELECT Restricted_Search__r.DeveloperName, DeveloperName, Applies_to_Minimum_Matches__c, 
+                                Required__c, Search_Field__r.QualifiedApiName 
+                            FROM Restricted_Search_Field__mdt 
+                            WHERE Restricted_Search__r.DeveloperName IN :metaRulesByDevName.keySet() ]) {
+                        metaRulesByDevName.get(fieldRow.Restricted_Search__r.DeveloperName).metaFieldRows.add(fieldRow);
+                    }
+                }
+                return true;
+            }
+            return false;
+        }
+
+        private double rankSpecificity(Restricted_Search__mdt candidate) {
+            double specificity;
+            // Primarily, give a higher rank to more specifically-targeted searches:
+            switch on candidate.User_Scope__c {
+                when 'Specific User' {
+                    specificity = 2.0;
+                }
+                when 'Guest Users' {
+                    specificity = 1.0;
+                } 
+                when else {
+                    specificity = 0.0;
+                }
+            }
+            // Secondarily, give a higher rank to less-restricted (broader) searches:
+            if (candidate.Query_Mode__c == 'Without Sharing') {
+                specificity += 0.1;
+            }
+            if (candidate.Minimum_Matches__c == null || candidate.Minimum_Matches__c == 0.0) {
+                specificity += 0.1;
+            } else {
+                specificity += 1.0 / (10.0 + Math.abs(candidate.Minimum_Matches__c));
+            }
+            return specificity;
+        }
+    
+        global QueryRule getRoot() {
+            QueryRule[] parents = getParents();
+            if (parents.size() == 0) {
+                return this;
+            }
+            return parents[parents.size() - 1];
+        }
+    
+        global QueryRule[] getParents() {
+            QueryRule[] parents = new QueryRule[]{};
+            QueryRule next = this;
+            while (next != null) {
+                next = next.parent;
+                if (next == null) {
+                    break;
+                }
+                parents.add(next);
+            }
+            return parents;
+        }
+    
+        global virtual String[] getFailPath() {
+            String[] parts = new String[]{};
+            if (parent != null) {
+                parts.addAll(parent.getFailPath());
+            }
+            parts.addAll(getFailHeader());
+            return parts;
+        }
+    
+        global virtual String[] getFailHeader() {
+            if (String.isNotBlank(header)) {
+                return new String[]{ header };
+            }
+            return new String[]{};
+        }
+    
+        // throw RuleViolationException
+        global virtual void assert(SOQLParser.SOQL soql) {}
+    }
+    
+    global class WhereClauseRequired extends QueryRule {
+        public WhereClauseRequired() {
+            super(null);
+        }
+    
+        global override void assert(SOQLParser.SOQL soql) {
+            if (soql.whereCond == null) {
+                ruleViolation(this, 'WHERE clause is required');
+            }
+        }
+    }
+    
+    global class FromClauseTarget extends QueryRule {
+        public Schema.SObjectType targetType;
+    
+        public FromClauseTarget() {
+            super(null);
+        }
+    
+        global FromClauseTarget(Schema.SObjectType targetType) {
+            this.targetType = targetType;
+        }
+    
+        global override void assert(SOQLParser.SOQL soql) {
+            if (soql.resTable != targetType) {
+                ruleViolation(this, 'Illegal FROM clause to ' + soql.fromEntity.lexeme + 
+                    '; only ' + targetType + ' is allowed');
+            }
+        }
+    }
+    
+    global virtual class SOQLStructureRule extends QueryRule {
+        public SOQLVisitor visitor;
+    
+        public SOQLStructureRule(SOQLVisitor visitor) {
+            super(visitor != null ? visitor.name : null);
+            this.visitor = visitor;
+        }
+    
+        global virtual override Boolean init() {
+            if (super.init()) {
+                if (visitor == null) {
+                    configError(this, 'SOQL Visitor was not specified');
+                }
+                return true;
+            }
+            return false;
+        }
+    
+        // Throws RuleViolationException
+        global virtual override void assert(SOQLParser.SOQL soql) {
+            try {
+                visitor.reset();
+                visitor.start(soql);
+                if (soql.whereCond != null) {
+                    // Throws SOQLVisitorViolationException:
+                    soql.whereCond.traverse(visitor);
+                }
+                visitor.finish(soql);
+            } catch(SOQLVisitorViolationException err) {
+                // Re-wrap and re-throw the underlying SOQLVisitor error:
+                ruleViolation(this, err.getMessage());
+            }
+        }
+    }
+    
+    global class MetadataRule extends SOQLStructureRule {
+        Schema.SObjectType targetType;
+        String targetName;
+        Restricted_Search__mdt metaRow;
+        Restricted_Search_Field__mdt[] metaFieldRows = new Restricted_Search_Field__mdt[]{};
+    
+        public MetadataRule(Schema.SObjectType targetType, String targetName) {
+            // Initialize an empty condition-visitor. The visitor will be filled-out from metadata rows in this.init():
+            super(new EnforceSearchTermsVisitor(targetType, targetName));
+            //this.header = targetType.getDescribe().getName() + ': ' + targetName;
+            this.targetType = targetType;
+            this.targetName = targetName;
+        }
+
+        //global override String[] getFailHeader() {
+        //    return new String[]{ '' + targetType, targetName };
+        //}
+        
+        // Throws RuleConfigurationException:
+        global override Boolean init() {
+            if (super.init()) {
+                if (targetType == null) {
+                    configError(this, 'Metadata Rule must define a target type');
+                }
+                // Remember, we've consolidated metadata loading into registerMetadata on root...
+                if (metaRow == null) {
+                    configError(this, 'Metadata Rule was not pre-loaded by root');
+                }
+                
+                try {
+                    EnforceSearchTermsVisitor termsVisitor = (EnforceSearchTermsVisitor) visitor;
+                    Integer minMatches = 0;
+                    if (metaRow.Minimum_Matches__c != null) {
+                        termsVisitor.setMinimumMatches(minMatches = metaRow.Minimum_Matches__c.intValue());
+                    }
+                    if (minMatches == null || minMatches < 1) {
+                        configError(this, 'Minimum matches must be set to a positive integer');
+                    }
+                    for (Restricted_Search_Field__mdt fieldRow : metaFieldRows) {
+                        // Add field-level rules via SOQLContext.addExactMatchElement() and/or .addFreestyleElement():
+                        if (fieldRow.Applies_to_Minimum_Matches__c == true) {
+                            termsVisitor.addExactMatchElement(
+                                fieldRow.Search_Field__r.QualifiedApiName, fieldRow.Required__c == true);
+                        } else {
+                            // !! The "allowNested" and "allowAnyOp" arguments are hardcoded to false for now, but we may 
+                            // choose to externalize these as metadata fields later on:
+                            termsVisitor.addFreestyleElement(
+                                fieldRow.Search_Field__r.QualifiedApiName, false, false);
+                        }
+                    }
+                } catch (SOQLVisitorConfigurationException err) {
+                    // Re-wrap and re-throw the underlying SOQLVisitor error:
+                    configError(this, err.getMessage());
+                }
+                return true;
+            }
+            return false;
+        }
+    }
+    
+    public virtual class MetadataFieldTerm {
         String path;
     }
-
-    public class ExactMatchElmt extends MatchElmt {
-        Boolean isRequired = true;
+    
+    public class MetadataMatchTerm extends MetadataFieldTerm {
+        Boolean isRequired = false;
     }
-
-    public class FreestyleElmt extends MatchElmt {
+    
+    class MetadataFreestyleTerm extends MetadataFieldTerm {
         Boolean allowNested;
         Boolean allowAnyOp;
+    }
+    
+    public final static Integer MATCH_ALL = 0;
+    public final static Integer MATCH_ANY = 1;
+
+    global class QueryRuleSet extends QueryRule {
+        public Integer matchMode = MATCH_ALL;
+        public QueryRule[] subRules = new QueryRule[]{};
+        public Schema.SObjectType targetType;
+    
+        global QueryRuleSet(String header) {
+            super(header);
+        }
+    
+        global QueryRuleSet() {
+            super(null);
+        }
+    
+        global virtual override String[] getFailHeader() {
+            if (header == null && matchMode == MATCH_ANY) {
+                return new String[]{ 'Match Any of ' + subRules.size(), 'Last Violation' };
+            }
+            return super.getFailHeader();
+        }
+    
+        global override Boolean init() {
+            if (super.init()) {
+                for (QueryRule subRule : subRules) {
+                    subRule.init();
+                }
+                return true;
+            }
+            return false;
+        }
+    
+        global QueryRuleSet matchAny() {
+            this.matchMode = MATCH_ANY;
+            return this;
+        }
+    
+        global QueryRuleSet matchAll() {
+            this.matchMode = MATCH_ALL;
+            return this;
+        }
+    
+        global void addRule(QueryRule rule) {
+            if (rule.parent != null) {
+                configError(rule, 'Sub-Rule cannot be reparented');
+            } else if (rule.isRoot == true) {
+                configError(rule, 'Root-Rule cannot be reparented');
+            }
+            QueryRule root = getRoot();
+            root.isRoot = true;
+            rule.parent = this;
+            rule.isRoot = false;
+            subRules.add(rule);
+            // TODO: this next bit of logic is too highly-coupled to the child QueryRule types, for my liking:
+            if (rule instanceof MetadataRule) {
+                root.registerMetadata((MetadataRule) rule);
+            } else if (rule instanceof FromClauseTarget) {
+                root.registerTargetType(((FromClauseTarget) rule).targetType);
+            }
+        }
+    
+        global QueryRuleSet whereClauseRequired() {
+            addRule(new WhereClauseRequired());
+            return this;
+        }
+    
+        global QueryRuleSet fromClauseTarget(Schema.SObjectType targetType) {
+            addRule(new FromClauseTarget(targetType));
+            return this;
+        }
+    
+        global QueryRuleSet subRules() {
+            QueryRuleSet newSubRules = new QueryRuleSet();
+            addRule(newSubRules);
+            return newSubRules;
+        }
+    
+        global QueryRuleSet metadataRule(String targetName) {
+            return metadataRule(null, targetName);
+        }
+    
+        global QueryRuleSet metadataRule(Schema.SObjectType targetType, String targetName) {
+            QueryRule root = getRoot();
+            if (targetType != null) {
+                root.registerTargetType(targetType);
+            } else {
+                targetType = root.registeredTargetType;
+            }
+            if (targetType == null) {
+                configError(this, 'Cannot add metadata-driven rules [' + targetName + 
+                    '] without specifying a target type');
+            }
+            addRule(new MetadataRule(targetType, targetName));
+            return this;
+        }
+    
+        global QueryRuleSet parent() {
+            // Here we're assuming only a QueryRuleSet can be a parent, which *should* be a valid assumption...
+            return (QueryRuleSet) (parent != null ? parent : this);
+        }
+    
+        global override void assert(SOQLParser.SOQL soql) {
+            Boolean matchedAll = true;
+            RuleViolationException lastViolation;
+            for (QueryRule subRule : subRules) {
+                try {
+                    subRule.assert(soql);
+                    // "Any" mode is done upon 1st success:
+                    if (matchMode == MATCH_ANY) {
+                        return;
+                    }
+                } catch (RuleViolationException err) {
+                    matchedAll = false;
+                    lastViolation = err;
+                    if (matchMode == MATCH_ALL) {
+                        break;
+                    }
+                }
+            }
+    
+            if (lastViolation != null) {
+                throw lastViolation;
+            }
+        }
     }
 }

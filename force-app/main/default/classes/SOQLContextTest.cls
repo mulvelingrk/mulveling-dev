@@ -1,281 +1,163 @@
-@isTest
-global class SOQLContextTest {
+@IsTest
+private class SOQLContextTest {
+    static final Schema.SObjectType MockClaimType = Schema.RKUX_Mock_Claim__c.SObjectType;
+    static SOQLContext context;
 
-    static SOQLContext SystemContext = new SOQLContext()
-        .systemCrudFLS()
-        .systemSharing();
-
-    static SOQLContext RestrictedContext;
-
-    @isTest
-    private static void testAST() {
-        String astTrace = getAST(
-            'FROM Account ' + 
-            'WHERE (ShippingCity = "Atlanta" OR (ShippingCity = "South Jersey Shore")) AND (NOT (ShippingAddress != "612 Wharf Avenue")) ' + 
-            'ORDER BY NAME').show();
-        System.assertEquals('AND|OR|=|ShippingCity|"Atlanta"|=|ShippingCity|"South Jersey Shore"|NOT|!=|ShippingAddress|"612 Wharf Avenue"', astTrace);
-
-        astTrace = getAST(
-            'FROM Account ' + 
-            'WHERE ShippingCity = "Atlanta" OR ShippingCity = "South Jersey Shore" AND NOT ShippingAddress != "612 Wharf \\"Avenue\\"" ' + 
-            'ORDER BY NAME').show();
-            System.assertEquals('OR|=|ShippingCity|"Atlanta"|AND|=|ShippingCity|"South Jersey Shore"|NOT|!=|ShippingAddress|"612 Wharf \\"Avenue\\""', astTrace);
+    @IsTest
+    private static void TestQueryRules() {
+        context = SOQLContext.newSystemMode()
+            .defineRuleSet('Mock Claim Search Rules')
+                .fromClauseTarget(Schema.RKUX_Mock_Claim__c.SObjectType)
+                .whereClauseRequired()
+                //.metadataRule('Test_Match_3')
+                .subRules()
+                    .matchAny()
+                    // Alternative #1: Match exactly on field Mock_Id__c:
+                    .metadataRule('Test_Match_ID')
+                    // Alternative #2 Include any 3 of the designated match terms (listed below):
+                    .metadataRule('Test_Match_3')
+            .context();
         
-        RestrictedContext = new SOQLContext()
-            .systemCrudFLS()
-            .systemSharing()
-            .addRule(
-                new SOQLContext.RestrictedToExactMatches('Account Billing 3 of 4', Schema.Account.SObjectType)
-                    .setMinimumMatches(3)
-                    .addExactMatchElement('AccountNumber', true)
-                    .addExactMatchElement('BillingAddress', true)
-                    .addExactMatchElement('BillingCity', false)
-                    .addExactMatchElement('BillingPostalCode', false)
-                    .addFreestyleElement('BillingState', true, true)
-                    .addFreestyleElement('Type', false, false)
-            );
+        // Restricted_Search__mdt metadata "Test_Match_3" for Schema.RKUX_Mock_Claim__c is configured as follows:
+        //
+        // Match Any 3 (Exact "=" Matches Only) Of:
+        //   Mock_Claimant_Last_Name__c [Required Match]
+        //   Cause__c
+        //   Claimant_City__c
+        //   Date_Claimant_Born__c
+        //   Claimant_First_Name__c
+        // 
+        // Allow Extra "Freestyle" AND's On:
+        //   Date_Hired__c
+        //   Claimant_Country__c
 
-        expectRuleFail(
-            'FROM Account ' + 
-            'WHERE BillingAddress = "612 Wharf Avenue" ' + 
-                'AND (AccountNumber = "123" OR (AccountNumber = "456")) ' + 
-                'AND BillingPostalCode = "10256"',
+        //SObject foo = Database.query('SELECT Id FROM Contact WHERE Foo > 1');
+        //String soqlTest = SOQLContext.newStrictMode().getQuery(
+        //        'SELECT Name, FIELDSET(Contact_FS_1), GenderIdentity FROM Contact', null, AllNullBinds, null);
+        //Assert.areEqual('Foo', soqlTest);
 
-            'Match condition "AccountNumber" cannot be nested deeper than a top-level AND condition'
-        );
+        //String soqlTest = context.getQuery(
+        //        'SELECT * FROM ' + MockClaimType + ' WHERE Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ?', null, AllNullBinds, null);
+        //Assert.areEqual('Foo', soqlTest);
 
-        expectRuleFail(
-            'FROM Account ' + 
-            'WHERE BillingAddress = "612 Wharf Avenue" ' + 
-                'OR AccountNumber = "123" ' + 
-                'OR BillingPostalCode = "10256" ' + 
-                'OR BillingcCity = "Atlanta" ',
+        //Integer nmeta = SOQLContext.newSystemMode().query('SELECT * FROM Restricted_Search__mdt WHERE Target__c = ? AND Object_Type__c = ?', new Object[]{ 'LWC - Strict Custom Lookup', '' + MockClaimType }).size();
+        //Assert.areEqual(2, nmeta);
 
-            'OR condition must be nested under a parent AND'
-        );
+        // Success: meets basic restriction requirements, no more or less:
+        String soql = assertSuccess('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ?', 
+            new Object[]{ 'Coolio', 'Compton', Date.newInstance(1980, 4, 4) });
 
-        expectRuleFail(
-            'FROM Account ' + 
-            'WHERE BillingAddress = "612 Wharf Avenue" ' + 
-                'AND AccountNumber LIKE "123%" ' + 
-                'AND BillingPostalCode = "10256" ' + 
-                'AND BillingCity = "South Jersey Shore" ' + 
-                'AND BillingState = "NJ" ',
+        Assert.areEqual(
+            'SELECT Id FROM ' + MockClaimType + ' WHERE Mock_Claimant_Last_Name__c = \'Coolio\' AND Claimant_City__c = \'Compton\' AND Date_Claimant_Born__c = 1980-04-03', 
+            soql);
 
-            'Match condition "AccountNumber" is only allowed "="; got "LIKE"'
-        );
+        // Violation: Query not allowed on Contact; must be RKUX_Mock_Claim__c:
+        assertFullQueryViolation('SELECT Id FROM Contact Where Id != null');
 
-        expectRuleFail(
-            'FROM Account ' + 
-            'WHERE BillingAddress = "612 Wharf Avenue" ' +  // match 1
-                'AND AccountNumber = "123" ' + // match 2
-                'AND BillingState = "NJ" ' + // freestyle
-                'AND Type = "Partner" ', // freestyle
+        // Violation: Query requires a WHERE clause:
+        assertFullQueryViolation('SELECT Id FROM ' + MockClaimType);
 
-            'Expected at least 3 match conditions; got 2'
-        );
+        // Success: Query satisfies alternative #1 metadata rule:
+        assertFullQuerySuccess('FROM ' + MockClaimType + ' WHERE Mock_Id__c = "123"');
 
-        expectRuleFail(
-            'FROM Contact ' + // wrong Object
-            'WHERE (BillingAddress = "612 Wharf Avenue" ' + // match 1
-                'AND ((AccountNumber = "123")) ' + // match 2
-                'AND BillingPostalCode = "10256")', // match 3
-            
-            'Illegal "FROM Contact" clause; only "FROM Account" is allowed'
-        );
+        // Success: has the 3 required match terms, AND is the top-level condition, and the superfluous groupings do not confuse the rules engine:
+        assertSuccess('(Mock_Claimant_Last_Name__c = ? AND (Claimant_City__c = ? AND Date_Claimant_Born__c = ?))');
 
-        expectRuleFail(
-            'FROM Account ' +
-            'WHERE (BillingAddress = "612 Wharf Avenue" ' + // match 1
-                'AND ((AccountNumber = "123")) ' + // match 2
-                'AND BillingPostalCode = "10256") ' +  // match 3
-            'ORDER BY AccountNumber ', // illegal ORDER BY
+        // Success: extra 4th match term (AND) is OK:
+        assertSuccess('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ? AND Cause__c = ?');
 
-            'ORDER BY clause is not allowed'
-        );
+        // Success: extra freestyle term is allowed (AND):
+        assertSuccess('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ? AND Date_Hired__c = ?');
 
-        expectRuleFail(
-            'FROM Account ' +
-            'WHERE AccountNumber = "123" ' +
-                'AND BillingPostalCode = "10256" ' +
-                'AND (BillingAddress = "612 Wharf Avenue" OR Type = "Competitor") ', // OR violation
+        // Success: 1st alternate rule (Match Any) passes on exact match on ID:
+        assertSuccess('Mock_Id__c = ?');
 
-            'Match condition "BillingAddress" cannot be nested deeper than a top-level AND condition'
-        );
+        // Success: freestyle terms can be in nested OR and NOT conditions, as long as they're all under a top-level AND:
+        //assertSuccess('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ? AND (Date_Hired__c = ? OR NOT Claimant_Country__c = ?)');
 
-        expectRuleFail(
-            'FROM Account ' +
-            'WHERE BillingAddress = "612 Wharf Avenue" ' + 
-                'AND AccountNumber = "123" ' +
-                'AND BillingPostalCode = "10256" ' +
-                'AND (BillingAddress = "5785 Redcoat Run") ', // double-match violation
+        // Violation: match term not allowed in OR condition:
+        assertViolation('Mock_Claimant_Last_Name__c = ? AND (Claimant_City__c = ? OR Date_Claimant_Born__c = ?)');
 
-            'Match condition "BillingAddress" cannot be used more than once'
-        );
+        // Violation: top level of WHERE condition cannot be OR:
+        assertViolation('Mock_Claimant_Last_Name__c = ? OR Claimant_City__c = ? OR Date_Claimant_Born__c = ?');
 
-        expectRuleFail(
-            'FROM Account ' +
-            'WHERE AccountNumber = "123" ' +
-                'AND BillingPostalCode = "10256" ' +
-                'AND NOT BillingAddress = "5785 Redcoat Run" ', // NOT violation
+        // Violation: match term not allowed in NOT condition:
+        assertViolation('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND NOT Date_Claimant_Born__c = ?');
 
-            'Match condition "BillingAddress" cannot be nested deeper than a top-level AND condition'
-        );
+        // Violation: required match term Mock_Claimant_Last_Name__c is missing:
+        assertViolation('Cause__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ?');
 
-        expectRuleFail(
-            'FROM Account ' +
-            'WHERE BillingAddress = "612 Wharf Avenue" ' + 
-                'AND BillingCity = "Stone Mountain" ' +
-                'AND BillingPostalCode = "30087" ' +
-                'AND Type = "Competitor" ',
+        // Violation: only 2 match terms; does not meet minimum of 3:
+        assertViolation('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ?');
 
-            'Required match condition "AccountNumber" is not present'
-        );
+        // Violation: match term uses disallowed ">" operator:
+        assertViolation('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ? AND Date_Hired__c > ?');
 
-        // TODO: Oops, ParseException I need to look into. SOQL does allow '=' on List arguments, 
-        // at least in some cases, and so should SOQLParser...
-        /*expectRuleFail(
-            'FROM Account ' +
-            'WHERE AccountNumber = ("123", "456") ' + 
-                'AND BillingAddress = "612 Wharf Avenue" ' + 
-                'AND BillingCity = "Stone Mountain" ' +
-                'AND BillingPostalCode = "30087" ',
+        // Violation: match term uses disallowed "LIKE" operator:
+        assertViolation('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ? AND Cause LIKE "%"');
 
-            'Match condition "AccountNumber" is only allowed simple match values; got list value'
-        );*/
+        // Violation: match term uses disallowed "contains" operator:
+        assertViolation('Mock_Claimant_Last_Name__c = ? AND Claimant_City__c = ? AND Date_Claimant_Born__c = ? AND Cause contains "foo"');
 
-        expectRuleFail(
-            'FROM Account ' +
-            'WHERE AccountNumber = :foo ' + 
-                'AND BillingAddress = "612 Wharf Avenue" ' + 
-                'AND BillingCity = "Stone Mountain" ' +
-                'AND BillingPostalCode = "30087" ',
+        // Violation: unresolved named bind parameter ":foo":
+        assertViolation('Mock_Claimant_Last_Name__c = :foo AND Claimant_City__c = ? AND Date_Claimant_Born__c = ?');
 
-            'Match condition "AccountNumber" is only allowed literal match values; got bind parameter ":foo"'
-        );
-
-        // Pass!
-        expectRulePass(
-            'FROM Account ' + 
-            'WHERE (BillingAddress = "612 Wharf Avenue" ' + // match 1
-                'AND ((AccountNumber = "123")) ' + // match 2
-                'AND BillingPostalCode = "10256")' // match 3
-        );
-
-        // Pass!
-        expectRulePass(
-            'FROM Account ' + 
-            'WHERE BillingAddress = "612 Wharf Avenue" ' + // match 1
-                'AND ((AccountNumber = "123")) ' + // match 2
-                'AND BillingPostalCode = "10256"' + // match 3
-                'AND (BillingState = "GA" OR BillingState beginsWith "A")' // freestyle element, allows nesting and any op
-        );
-
-        expectRuleFail(
-            'FROM Account ' + 
-            'WHERE BillingAddress = "612 Wharf Avenue" ' + // match 1
-                'AND ((AccountNumber = "123")) ' + // match 2
-                'AND BillingPostalCode = "10256"' + // match 3
-                'AND (Type = "Partner" OR Type beginsWith "C")', // freestyle element, dose NOT allow nesting
-
-            'Freestyle condition "Type" cannot be nested deeper than a top-level AND condition'
-        );
-
-        // TODO: This fails becasue the match conditions are nested in an AND|AND - but should that be OK?
-        /*// Pass!
-        expectRulePass(
-            'FROM Account ' + 
-            'WHERE (BillingAddress = "612 Wharf Avenue" ' + // match 1
-                'AND ((AccountNumber = "123")) ' + // match 2
-                'AND BillingPostalCode = "10256")' + // match 3
-                'AND (BillingState = "GA" OR BillingState beginsWith "A")' // freestyle element, allows nesting and any op
-        );*/
-        
+         // Failure: Invalid syntax:
+         //assertFailure('foo bar baz');
     }
 
-    static void expectRuleFail(String query, String expectedMessage) {
-        Assert.isNotNull(RestrictedContext, 'RestrictedContext has not been initialized');
-        SOQLContext.RestrictedSearch rule;
-        switch on RestrictedContext.searchRules.size() {
-            when 0 {
-                Assert.fail('RestrictedContext has no rules; one must be specified');
-            }
-            when 1 {
-                rule = RestrictedContext.searchRules[0];
-            }
-            when else {
-                Assert.fail('RestrictedContext has multiple rules; one must be specified');
-            }
-        }
-        expectRuleFail(query, rule.name, expectedMessage);
+    static Object[] AllNullBinds = new Object[]{ null, null, null, null, null, null, null, null, null, null };
+
+    static String assertSuccess(String whereClause) {
+        return assertSuccess(whereClause, AllNullBinds);
     }
 
-    static void expectRuleFail(String query, String ruleName, String expectedMessage) {
-        Assert.isNotNull(RestrictedContext, 'Restricted Search Context has not been initialized');
-        expectedMessage = 'Restricted Search Violation [' + ruleName + ']: ' + expectedMessage;
-        try { 
-            RestrictedContext.validate(query);
-            Assert.fail('Unexpected Rule Pass; Expected Fail [' + expectedMessage + ']');
-        } catch(SOQLContext.RestrictedSearchException e) {
-            Assert.isTrue(expectedMessage == e.getMessage(), 
-                'Unexpected Rule Fail [' + e.getMessage() + ']; Expected Different Fail [' + expectedMessage + ']');
-        }
-    }
-
-    static SOQLParser.SOQL expectRulePass(String query) {
-        Assert.isNotNull(RestrictedContext, 'Restricted Search Context has not been initialized');
-        SOQLParser.SOQL soql;
-        try { 
-            soql = RestrictedContext.validate(query);
-        } catch(SOQLContext.RestrictedSearchException e) {
-            Assert.fail('Unexpected Rule Fail [' + e.getMessage() + ']; Expected Pass');
+    static String assertSuccess(String whereClause, Object[] anonBinds) {
+        String soql;
+        try {
+            soql = context.getQuery(
+                'FROM ' + MockClaimType + ' WHERE ' + whereClause, null, anonBinds, null);
+        } catch (SOQLContext.RuleViolationException err) {
+            Assert.fail('Unexpected Rule Violation: ' + err.getMessage());
         }
         return soql;
     }
 
-    static ASTWalk getAST(String query) {
-        SOQLParser.SOQL soql = SystemContext.validate(query);
-        ASTWalk walker = new ASTWalk();
-        soql.whereCond.traverse(walker);
-        return walker;
+    static String assertFullQuerySuccess(String fullQuery) {
+        String soql;
+        try {
+            soql = context.getQuery(fullQuery, null, AllNullBinds, null);
+        } catch (SOQLContext.RuleViolationException err) {
+            Assert.fail('Unexpected Rule Violation: ' + err.getMessage());
+        }
+        return soql;
     }
 
-    global class ASTWalk extends SOQLParser.ASTVisitor {
-        String[] stack = new String[]{};
-
-        global override void onStart(ASTCond root) {
-            this.stack = new String[]{};
-        }
-
-        global override void onCond(ASTCond cond) {
-            if (cond.isAnd()) {
-                stack.add('AND');
-            } else if (cond.isOr()) {
-                stack.add('OR');
-            } else if (cond.isNot()) {
-                stack.add('NOT');
-            } else if (cond.isGroup()) {
-                stack.add('()');
-            } else if (cond.isSimple()) {
-                stack.add(((ASTSimpleCond) cond).op.lexeme);
-            }
-        }
-
-        global override void onLeaveCond(ASTCond cond) {}
-        global override void onValue(ASTValue val) {
-            if (val.scalar != null) {
-                stack.add(val.scalar.loc.lexeme);
-            } else {
-                stack.add('<LIST_VALUE>');
-            }
-        }
-        global override void onReference(ASTReference ref) {
-            stack.add(ref.getBestPath());
-        }
-        global override void onFinish(ASTCond root) {}
-
-        String show() {
-            return String.join(stack, '|');
-        }
+    static void assertViolation(String whereClause) {
+        assertViolation(whereClause, AllNullBinds);
     }
+
+    static void assertViolation(String whereClause, Object[] anonBinds) {
+        Boolean gotErr = false;
+        try {
+            context.getQuery(
+                'FROM ' + MockClaimType + ' WHERE ' + whereClause, null,anonBinds, null);
+        } catch (SOQLContext.RuleViolationException err) {
+            gotErr = true;
+        }
+        Assert.isTrue(gotErr, 'Missed Rule Violation on: ' + whereClause);
+    }
+
+    static void assertFullQueryViolation(String fullQuery) {
+        Boolean gotErr = false;
+        try {
+            context.getQuery(fullQuery, null, AllNullBinds, null);
+        } catch (SOQLContext.RuleViolationException err) {
+            gotErr = true;
+        }
+        Assert.isTrue(gotErr, 'Missed Rule Violation on: ' + fullQuery);
+    }
+
+    // Rule Violation on [Patient Lookup]: WHERE clause is required
+    // Rule Violation on [Patient Lookup][Match Any Of 2][Last Violation][Match LastName, Birth, SSN4]: Expected at least 3 qualifying match terms; got 2
 }
