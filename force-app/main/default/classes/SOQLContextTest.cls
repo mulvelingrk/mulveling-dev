@@ -14,11 +14,40 @@ private class SOQLContextTest {
                     .matchAny()
                     // Alternative #1: Match exactly on field Mock_Id__c:
                     .metadataRule('Test_Match_ID')
-                    // Alternative #2 Include any 3 of the designated match terms (listed below):
+                    // Alternative #2 Include any 3 of the designated 
+                    // match terms (listed below):
                     .metadataRule('Test_Match_3')
             .context();
         
-        // Restricted_Search__mdt metadata "Test_Match_3" for Schema.RKUX_Mock_Claim__c is configured as follows:
+        /*
+        context = SOQLContext.newSystemMode()
+            .defineRuleSet('Mock Claim Search Rules')
+                .fromClauseTarget(Schema.RKUX_Mock_Claim__c.SObjectType)
+                .whereClauseRequired()
+                //.metadataRule('Test_Match_3')
+                .subRules()
+                    .matchAny()
+                    // Alternative #1: Match exactly on field Mock_Id__c:
+                    .startSearchTerms('Match ID')
+                        .minimumMatches(1)
+                        .matchTerm('Mock_Id__c')
+                    .endSearchTerms()
+                    // Alternative #2 Include any 3 of the designated 
+                    .startSearchTerms('Match 3')
+                        .minimumMatches(3)
+                        .requiredMatchTerm('Mock_Claimant_Last_Name__c')
+                        .matchTerm('Cause__c')
+                        .matchTerm('Claimant_City__c')
+                        .matchTerm('Date_Claimant_Born__c')
+                        .matchTerm('Claimant_First_Name__c')
+                        .freestyleTerm('Date_Hired__c')
+                        .freestyleTerm('Claimant_Country__c')
+                    .endSearchTerms()
+            .context();
+        */
+
+        // Restricted_Search__mdt metadata "Test_Match_3" for 
+        // Schema.RKUX_Mock_Claim__c is configured as follows:
         //
         // Match Any 3 (Exact "=" Matches Only) Of:
         //   Mock_Claimant_Last_Name__c [Required Match]

@@ -1120,7 +1120,16 @@ global class SOQLContext {
     
         global virtual override String[] getFailHeader() {
             if (header == null && matchMode == MATCH_ANY) {
-                return new String[]{ 'Match Any of ' + subRules.size(), 'Last Violation' };
+                Integer len = subRules.size();
+                String[] headerParts = new String[]{};
+                if (len < 2) {
+                    headerParts.add('Match Any');
+                } else {
+                    headerParts.add('Match Any of ' + len);
+                    headerParts.add('Last Violation');
+                }
+                return headerParts;
+                //return new String[]{ 'Match Any' + (subRules.size() > 0 ? ' of ' + subRules.size() : ''), 'Last Violation' };
             }
             return super.getFailHeader();
         }
