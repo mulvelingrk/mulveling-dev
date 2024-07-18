@@ -769,7 +769,7 @@ global class SOQLContext {
     global virtual class QueryRule {
         public Boolean isRoot = null;
         public String header;
-        public QueryRule parent;
+        public QueryRuleSet parent;
         public Boolean initialized = false;
     
         // The following are utilized only by root rules:
@@ -807,6 +807,17 @@ global class SOQLContext {
                     ' clashes with previously registered type ' + registeredTargetType);
             }
             this.registeredTargetType = targetType;
+        }
+
+        global QueryRuleSet parent() {
+            // Here we're assuming only a QueryRuleSet can be a parent, which *should* be a valid assumption...
+            if (parent != null) {
+                return parent;
+            } else if (this instanceof QueryRuleSet) {
+                return (QueryRuleSet) this;
+            }
+            configError(this, 'Parent() request is invalid. Non-container QueryRule has no parent.');
+            return null; // unreachable
         }
 
         global SOQLContext context() {
@@ -1028,6 +1039,44 @@ global class SOQLContext {
             }
         }
     }
+
+    global class RestrictedSearchTermsRule extends SOQLStructureRule {
+        Schema.SObjectType targetType;
+
+        public RestrictedSearchTermsRule(Schema.SObjectType targetType, String ruleName) {
+            // Initialize an empty condition-visitor. The visitor will be filled-out from metadata rows in this.init():
+            super(new EnforceSearchTermsVisitor(targetType, ruleName));
+            this.targetType = targetType;
+        }
+
+        private EnforceSearchTermsVisitor getSearchTermsVisitor() {
+            return (EnforceSearchTermsVisitor) visitor;
+        }
+
+        global RestrictedSearchTermsRule minimumMatches(Integer minMatches) {
+            getSearchTermsVisitor().setMinimumMatches(minMatches);
+            return this;
+        }
+
+        global RestrictedSearchTermsRule matchTerm(String fieldPath) {
+            getSearchTermsVisitor().addExactMatchElement(fieldPath, false);
+            return this;
+        }
+
+        global RestrictedSearchTermsRule requiredMatchTerm(String fieldPath) {
+            getSearchTermsVisitor().addExactMatchElement(fieldPath, true);
+            return this;
+        }
+
+        global RestrictedSearchTermsRule freestyleTerm(String fieldPath) {
+            getSearchTermsVisitor().addFreestyleElement(fieldPath, false, false);
+            return this;
+        }
+
+        global QueryRuleSet endSearchTerms() {
+            return parent();
+        }
+    }
     
     global class MetadataRule extends SOQLStructureRule {
         Schema.SObjectType targetType;
@@ -1194,6 +1243,28 @@ global class SOQLContext {
         }
     
         global QueryRuleSet metadataRule(Schema.SObjectType targetType, String targetName) {
+            targetType = registerOrGetTargetType(targetType, String.isBlank(targetName) ? 'Metadata-Driven Search Terms' : targetName);
+            addRule(new MetadataRule(targetType, targetName));
+            return this;
+        }
+
+        global RestrictedSearchTermsRule startSearchTerms() {
+            return startSearchTerms(null, null);
+        }
+
+        global RestrictedSearchTermsRule startSearchTerms(String ruleName) {
+            return startSearchTerms(null, ruleName);
+        }
+
+        global RestrictedSearchTermsRule startSearchTerms(Schema.SObjectType targetType, String ruleName) {
+            ruleName = String.isNotBlank(ruleName) ? ruleName : 'Inline Search Terms';
+            targetType = registerOrGetTargetType(targetType, ruleName);
+            RestrictedSearchTermsRule searchTerms = new RestrictedSearchTermsRule(targetType, ruleName);
+            addRule(searchTerms);
+            return searchTerms;
+        }
+
+        private Schema.SObjectType registerOrGetTargetType(Schema.SObjectType targetType, String ruleName) {
             QueryRule root = getRoot();
             if (targetType != null) {
                 root.registerTargetType(targetType);
@@ -1201,18 +1272,12 @@ global class SOQLContext {
                 targetType = root.registeredTargetType;
             }
             if (targetType == null) {
-                configError(this, 'Cannot add metadata-driven rules [' + targetName + 
+                configError(this, 'Cannot add type-specific rule [' + ruleName + 
                     '] without specifying a target type');
             }
-            addRule(new MetadataRule(targetType, targetName));
-            return this;
+            return targetType;
         }
-    
-        global QueryRuleSet parent() {
-            // Here we're assuming only a QueryRuleSet can be a parent, which *should* be a valid assumption...
-            return (QueryRuleSet) (parent != null ? parent : this);
-        }
-    
+        
         global override void assert(SOQLParser.SOQL soql) {
             Boolean matchedAll = true;
             RuleViolationException lastViolation;
