@@ -9,7 +9,7 @@ private class SOQLContextTest {
         TestContexts.add(
             // Metadata-driven search terms rules:
             SOQLContext.newSystemMode()
-                .defineRuleSet('Mock Claim Search Rules')
+                .defineRuleSet('Metadata Search Rules')
                     .fromClauseTarget(Schema.RKUX_Mock_Claim__c.SObjectType)
                     .whereClauseRequired()
                     //.metadataRule('Test_Match_3')
@@ -27,18 +27,20 @@ private class SOQLContextTest {
             // Inline-defined search terms equivalent of the above metadata-driven 
             // rules - which should yield the exact same results on the following assertions:
             SOQLContext.newSystemMode()
-                .defineRuleSet('Mock Claim Search Rules')
+                .defineRuleSet('Inline Search Rules')
                     .fromClauseTarget(Schema.RKUX_Mock_Claim__c.SObjectType)
                     .whereClauseRequired()
-                    //.metadataRule('Test_Match_3')
                     .subRules()
                         .matchAny()
-                        // Alternative #1: Match exactly on field Mock_Id__c:
+                        // Alternative #1: Query condition must match exactly on 
+                        // field Mock_Id__c:
                         .startSearchTerms('Match ID')
                             .minimumMatches(1)
                             .matchTerm('Mock_Id__c')
                         .endSearchTerms()
-                        // Alternative #2 Include any 3 of the designated 
+                        // Alternative #2 Query must include at least 3 of the 
+                        // following enumerated "match terms"; Last Name is 
+                        // required to be one of the terms.
                         .startSearchTerms('Match 3')
                             .minimumMatches(3)
                             .requiredMatchTerm('Mock_Claimant_Last_Name__c')
@@ -69,7 +71,8 @@ private class SOQLContextTest {
         //    'SELECT * FROM Restricted_Search__mdt' + 
         //    ' WHERE Target__c = ?' + 
         //        ' AND Object_Type__c = ?', 
-        //    new Object[]{ 'LWC - Strict Custom Lookup', '' + MockClaimType }).size();
+        //    new Object[]{ 'LWC - Strict Custom Lookup', '' + MockClaimType })
+        //    .size();
         //Assert.areEqual(2, nmeta);
 
         do {
@@ -87,7 +90,8 @@ private class SOQLContextTest {
                     ' AND Date_Claimant_Born__c = 1980-04-03', 
                 soql);
 
-            // Violation: Query not allowed on Contact; must be RKUX_Mock_Claim__c:
+            // Violation: Query not allowed on Contact; must be 
+            // RKUX_Mock_Claim__c:
             assertFullQueryViolation('SELECT Id FROM Contact Where Id != null');
 
             // Violation: Query requires a WHERE clause:
@@ -98,8 +102,9 @@ private class SOQLContextTest {
                 'FROM ' + MockClaimType + 
                 ' WHERE Mock_Id__c = "123"');
 
-            // Success: has the 3 required match terms, AND is the top-level condition, 
-            // and the superfluous groupings do not confuse the rules engine:
+            // Success: has the 3 required match terms, AND is the top-level 
+            // condition, and the superfluous groupings do not confuse the 
+            // rules engine:
             assertSuccess('(Mock_Claimant_Last_Name__c = ?' + 
                 ' AND (Claimant_City__c = ? AND Date_Claimant_Born__c = ?))');
 
@@ -115,11 +120,12 @@ private class SOQLContextTest {
                 ' AND Date_Claimant_Born__c = ?' + 
                 ' AND Date_Hired__c = ?');
 
-            // Success: 1st alternate rule (Match Any) passes on exact match on ID:
+            // Success: 1st alternate rule (Match Any) passes on exact match 
+            // on ID:
             assertSuccess('Mock_Id__c = ?');
 
-            // Success: freestyle terms can be in nested OR and NOT conditions, as long as 
-            // they're all under a top-level AND:
+            // Success: freestyle terms can be in nested OR and NOT conditions,
+            // as long as they're all under a top-level AND:
             //assertSuccess('Mock_Claimant_Last_Name__c = ?' + 
             //    ' AND Claimant_City__c = ?' + 
             //    ' AND Date_Claimant_Born__c = ?' + 
@@ -194,8 +200,7 @@ private class SOQLContextTest {
                 'FROM ' + MockClaimType + 
                 ' WHERE ' + whereClause, null, anonBinds, null);
         } catch (SOQLContext.RuleViolationException err) {
-            Assert.fail('[' + TestIndex + 
-                '] Unexpected Rule Violation: ' + err.getMessage());
+            Assert.fail('Unexpected Rule Violation: ' + err.getMessage());
         }
         return soql;
     }
@@ -206,8 +211,7 @@ private class SOQLContextTest {
             soql =  TestContexts[TestIndex].getQuery(
                 fullQuery, null, AllNullBinds, null);
         } catch (SOQLContext.RuleViolationException err) {
-            Assert.fail('[' + TestIndex + 
-                '] Unexpected Rule Violation: ' + err.getMessage());
+            Assert.fail('Unexpected Rule Violation: ' + err.getMessage());
         }
         return soql;
     }
@@ -226,8 +230,7 @@ private class SOQLContextTest {
         } catch (SOQLContext.RuleViolationException err) {
             gotErr = true;
         }
-        Assert.isTrue(gotErr, '[' + TestIndex + 
-            '] Missed Rule Violation on: ' + whereClause);
+        Assert.isTrue(gotErr, 'Missed Rule Violation on: ' + whereClause);
     }
 
     static void assertFullQueryViolation(String fullQuery) {
@@ -238,8 +241,7 @@ private class SOQLContextTest {
         } catch (SOQLContext.RuleViolationException err) {
             gotErr = true;
         }
-        Assert.isTrue(gotErr, '[' + TestIndex + 
-            '] Missed Rule Violation on: ' + fullQuery);
+        Assert.isTrue(gotErr, 'Missed Rule Violation on: ' + fullQuery);
     }
 
     // Example rule violation exception messages:
