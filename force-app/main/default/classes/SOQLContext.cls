@@ -14,10 +14,29 @@ global class SOQLContext {
         global Integer numCRUD {get; public set;}
         global Integer numFLS {get; public set;}
     }
+
+    // Wraps and consolidates all the SOQLParser-namespace exceptions that may have be thrown out:
+    global class QueryException extends Exception {}
+
+    private static void wrapAndRethrowParseErrors(Exception og) {
+        if (og instanceof SOQLParser.ErrorException || 
+            og instanceof SOQLParser.ParseException ||
+            og instanceof SOQLParser.ReferenceException || 
+            og instanceof SOQLParser.TypeException ||
+            og instanceof SOQLParser.SerializerException ||
+            og instanceof SOQLParser.EvaluationException) {
+
+            QueryException qe = new QueryException(og.getMessage(), og);
+            qe.setMessage(og.getMessage());
+            //qe.initCause(og);
+            throw qe;
+        }
+        throw og;
+    }
  
-    static SOQLContext DefaultSystemMode;
-    static SOQLContext DefaultSafeMode;
-    static SOQLContext DefaultStrictMode;
+    private static SOQLContext DefaultSystemMode;
+    private static SOQLContext DefaultSafeMode;
+    private static SOQLContext DefaultStrictMode;
 
     // =====================================================================================================================
     // Core SOQLContext API:
@@ -323,9 +342,12 @@ global class SOQLContext {
             assertRules(soql)
                 .bind();
             return sharingModel.query(soql.ser(false), rebindPool);
+        } catch (Exception e) {
+            wrapAndRethrowParseErrors(e);
         } finally {
             RKSecurity.restore(sp);
         }
+        return null; // unreachable
     }
 
     global String getQuery(String queryString) {
@@ -432,9 +454,12 @@ global class SOQLContext {
             // full specifications of this SOQLContext:
             //soql.ser(false);
             return soql;
+        } catch (Exception e) {
+            wrapAndRethrowParseErrors(e);
         } finally {
             RKSecurity.restore(sp);
         }
+        return null; // unreachable
     }
 
     // =============================================================================================================
@@ -454,9 +479,12 @@ global class SOQLContext {
                     .resolve(enforceCrudFLS);
 
             return assertRules(soql);
+        } catch (Exception e) {
+            wrapAndRethrowParseErrors(e);
         } finally {
             RKSecurity.restore(sp);
         }
+        return null; // unreachable
     }
 
     // Throws RuleViolationException, RuleConfigurationException:

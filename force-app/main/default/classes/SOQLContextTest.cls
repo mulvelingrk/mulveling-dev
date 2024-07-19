@@ -56,10 +56,10 @@ private class SOQLContextTest {
                 .context()
         );
 
-        //SObject foo = Database.query('SELECT Id FROM Contact WHERE Foo > 1');
+        //SObject foo = Database.query('SELECT Id FROM Contact WHERE Foo');
         //String soqlTest = SOQLContext.newStrictMode().getQuery(
         //    'SELECT Name, FIELDSET(Contact_FS_1), GenderIdentity' + 
-        //    ' FROM Contact', null, AllNullBinds, null);
+        //    ' FROM Contact WHERE LastName', null, AllNullBinds, null);
         //Assert.areEqual('Foo', soqlTest);
 
         //String soqlTest = context.getQuery(
