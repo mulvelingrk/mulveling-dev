@@ -1,6 +1,7 @@
 @IsTest
 private class SOQLContextTest {
-    static final Schema.SObjectType MockClaimType = Schema.RKUX_Mock_Claim__c.SObjectType;
+    static final Schema.SObjectType MockClaimType = 
+        Schema.RKUX_Mock_Claim__c.SObjectType;
     static SOQLContext[] TestContexts = new SOQLContext[]{};
     static Integer TestIndex = 0;
 
@@ -25,7 +26,8 @@ private class SOQLContextTest {
 
         TestContexts.add(
             // Inline-defined search terms equivalent of the above metadata-driven 
-            // rules - which should yield the exact same results on the following assertions:
+            // rules - which should yield the exact same results on the following 
+            // assertions:
             SOQLContext.newSystemMode()
                 .defineRuleSet('Inline Search Rules')
                     .fromClauseTarget(Schema.RKUX_Mock_Claim__c.SObjectType)
@@ -77,18 +79,42 @@ private class SOQLContextTest {
 
         do {
             // Success: meets basic restriction requirements, no more or less:
-            String soql = assertSuccess(
+            SOQLParser.SOQL soql = assertSuccess(
                 'Mock_Claimant_Last_Name__c = ?' + 
                     ' AND Claimant_City__c = ?' + 
                     ' AND Date_Claimant_Born__c = ?', 
                 new Object[]{ 'Coolio', 'Compton', Date.newInstance(1980, 4, 4) });
 
-            Assert.areEqual(
+            String expectedVanillaSOQL = 
                 'SELECT Id FROM ' + MockClaimType + 
                 ' WHERE Mock_Claimant_Last_Name__c = \'Coolio\'' + 
                     ' AND Claimant_City__c = \'Compton\'' + 
-                    ' AND Date_Claimant_Born__c = 1980-04-03', 
-                soql);
+                    ' AND Date_Claimant_Born__c = 1980-04-03';
+            Assert.areEqual(expectedVanillaSOQL, soql.ser());
+            // Assert again to verify there are no unexpected side-effects from 
+            // the 1st serialization:
+            Assert.areEqual(expectedVanillaSOQL, soql.ser());
+            
+            // Extract the parsed & validated WHERE condition from above, and 
+            // remix it into a new query that WOULD have violated our original 
+            // rules (because of the top-level OR), but passes under this new 
+            // system context!:
+            SOQLParser.SOQL soqlRemix = 
+                SOQLContext.newSystemMode()
+                    .getSOQL(
+                        'FROM ' + soql.getFromTarget() + 
+                        ' WHERE Mock_Id__c = "abc" OR (' + 
+                            soql.getWhereCondition().ser() + ')');
+            Assert.areEqual(
+                'SELECT Id FROM ' + MockClaimType + 
+                ' WHERE Mock_Id__c = \'abc\'' + 
+                    ' OR (Mock_Claimant_Last_Name__c = \'Coolio\'' + 
+                        ' AND Claimant_City__c = \'Compton\'' + 
+                        ' AND Date_Claimant_Born__c = 1980-04-03)', 
+                soqlRemix.ser());
+            // And finally, assert that this remixed query fails the rule set
+            // under our original context:
+            assertFullQueryViolation(soqlRemix.ser());
 
             // Violation: Query not allowed on Contact; must be 
             // RKUX_Mock_Claim__c:
@@ -188,15 +214,15 @@ private class SOQLContextTest {
     static Object[] AllNullBinds = new Object[]{ 
         null, null, null, null, null, null, null, null, null, null };
 
-    static String assertSuccess(String whereClause) {
+    static SOQLParser.SOQL assertSuccess(String whereClause) {
         return assertSuccess(whereClause, AllNullBinds);
     }
 
-    static String assertSuccess(
+    static SOQLParser.SOQL assertSuccess(
             String whereClause, Object[] anonBinds) {
-        String soql;
+        SOQLParser.SOQL soql;
         try {
-            soql =  TestContexts[TestIndex].getQuery(
+            soql =  TestContexts[TestIndex].getSOQL(
                 'FROM ' + MockClaimType + 
                 ' WHERE ' + whereClause, null, anonBinds, null);
         } catch (SOQLContext.RuleViolationException err) {
@@ -205,10 +231,10 @@ private class SOQLContextTest {
         return soql;
     }
 
-    static String assertFullQuerySuccess(String fullQuery) {
-        String soql;
+    static SOQLParser.SOQL assertFullQuerySuccess(String fullQuery) {
+        SOQLParser.SOQL soql;
         try {
-            soql =  TestContexts[TestIndex].getQuery(
+            soql =  TestContexts[TestIndex].getSOQL(
                 fullQuery, null, AllNullBinds, null);
         } catch (SOQLContext.RuleViolationException err) {
             Assert.fail('Unexpected Rule Violation: ' + err.getMessage());
@@ -224,7 +250,7 @@ private class SOQLContextTest {
             String whereClause, Object[] anonBinds) {
         Boolean gotErr = false;
         try {
-            TestContexts[TestIndex].getQuery(
+            TestContexts[TestIndex].getSOQL(
                 'FROM ' + MockClaimType + 
                 ' WHERE ' + whereClause, null,anonBinds, null);
         } catch (SOQLContext.RuleViolationException err) {
@@ -236,7 +262,7 @@ private class SOQLContextTest {
     static void assertFullQueryViolation(String fullQuery) {
         Boolean gotErr = false;
         try {
-            TestContexts[TestIndex].getQuery(
+            TestContexts[TestIndex].getSOQL(
                 fullQuery, null, AllNullBinds, null);
         } catch (SOQLContext.RuleViolationException err) {
             gotErr = true;
@@ -247,5 +273,6 @@ private class SOQLContextTest {
     // Example rule violation exception messages:
     // Rule Violation on [Patient Lookup]: WHERE clause is required
     // Rule Violation on [Patient Lookup][Match Any Of 2][Last Violation]
-    //   [Match LastName, Birth, SSN4]: Expected at least 3 qualifying match terms; got 2
+    //   [Match LastName, Birth, SSN4]: Expected at least 3 qualifying
+    //   match terms; got 2
 }

@@ -257,6 +257,19 @@ global class SOQLParser {
             parser.refProc = new ReferenceProcessor(parent.parser.refProc);
         }
 
+        global CondExpr getWhereCondition() {
+            return whereCond;
+        }
+
+        global String getFromLexeme() {
+            return fromEntity != null ? fromEntity.lexeme : null;
+        }
+
+        global Schema.SObjectType getFromTarget() {
+            Assert.isNotNull(resTable, 'FROM target cannot be requested before SOQL has been resolved');
+            return resTable;
+        }
+
         global SOQL reBindPool(String name) {
             this.reBindPool = new LocalReBindPool(name);
             return this;
@@ -600,8 +613,12 @@ global class SOQLParser {
             return this;
         }
 
+        global String ser() {
+            return ser(false);
+        }
+
         // !! resolve() and bind() should be called before ser():
-        public String ser(Boolean countOnly) {
+        global String ser(Boolean countOnly) {
             String[] nestedSer = new String[]{};
             if (!countOnly) {
                 if (nested != null) {
@@ -2063,21 +2080,22 @@ if (refProc == null) {
                 if (resolvedStringSer.containsAny('\n\r')) {
                     this.resolvedStringSer = resolvedStringSer.replace('\r\n', '\\r\\n').replace('\n', '\\n').replace('\r', '\\r');
                 }
-                return '\'' + resolvedStringSer + '\'';
+                //return '\'' + resolvedStringSer + '\'';
+                return this.resolvedStringSer = '\'' + resolvedStringSer + '\'';
             } else if (stringLitParts != null) {
                 String[] resParts = new String[]{ '\'' };
-                    for (Integer i=0; i < stringLitParts.size(); i++) {
-                        Integer code = stringLitCodes[i];
-                        if (code == 0) {
-                            resParts.add(stringLitParts[i]);
-                        } else if (code == 1 || isLikeOpTarget == true) {
-                            resParts.add('\\');
-                            resParts.add(stringLitParts[i]);
-                            // else code is 2 and we're not the target of a like clause; \% and \_ sequences reduce to % and _ respectively:
-                        } else {
-                            resParts.add(stringLitParts[i]);
-                        }
+                for (Integer i=0; i < stringLitParts.size(); i++) {
+                    Integer code = stringLitCodes[i];
+                    if (code == 0) {
+                        resParts.add(stringLitParts[i]);
+                    } else if (code == 1 || isLikeOpTarget == true) {
+                        resParts.add('\\');
+                        resParts.add(stringLitParts[i]);
+                        // else code is 2 and we're not the target of a like clause; \% and \_ sequences reduce to % and _ respectively:
+                    } else {
+                        resParts.add(stringLitParts[i]);
                     }
+                }
                 resParts.add('\'');
                 return this.resolvedStringSer = String.join(resParts, '');
             }
@@ -3904,558 +3922,558 @@ start = start.addYears(startOffset);
     
     static final Set<Integer> relationalOpTypes = new Set<Integer>{
         SOQLLexer.LESS_THAN_EQUALS, SOQLLexer.LESS_THAN,
-            SOQLLexer.GREATER_THAN_EQUALS, SOQLLexer.GREATER_THAN
-            };
+        SOQLLexer.GREATER_THAN_EQUALS, SOQLLexer.GREATER_THAN
+    };
                 
-                // This serializer outputs a parsed condition expression in strict SOQL syntax. Any transformations and/or parameter bindings should be performed
-                // before this:
-                global virtual class Serializer extends Visitor {
-                    // this stack is to aid type checking at the Value level; values can easlily look to the top of the stack to get their target field and type.
-                    // with the current implementation this stack can only be a max of 1-deep, but if queries can be nested in the future (i.e. values list from nested
-                    // query) then it can become deeper:
-                    SimpleExpr[] simpleExprStack = new SimpleExpr[]{};
-                        // used for just-in-time resolving of any missing ref/field type information:
-                        ReferenceProcessor refProc;
+    // This serializer outputs a parsed condition expression in strict SOQL syntax. Any transformations and/or parameter bindings should be performed
+    // before this:
+    global virtual class Serializer extends Visitor {
+        // this stack is to aid type checking at the Value level; values can easlily look to the top of the stack to get their target field and type.
+        // with the current implementation this stack can only be a max of 1-deep, but if queries can be nested in the future (i.e. values list from nested
+        // query) then it can become deeper:
+        SimpleExpr[] simpleExprStack = new SimpleExpr[]{};
+            // used for just-in-time resolving of any missing ref/field type information:
+            ReferenceProcessor refProc;
+        
+        global Serializer(Schema.sObjectType baseRefType) {
+            this.refProc = new ReferenceProcessor(baseRefType);
+        }
+        
+        global Serializer(ReferenceProcessor refProc) {
+            //System.assert(refProc != null, 'Serializer<init> - Reference Processor cannot be null');
+            this.refProc = refProc;
+            if (refProc == null) {
+                this.refProc = new ReferenceProcessor();
+            }
+        }
+        
+        global Serializer strictTypes(Schema.sObjectType baseRefType) {
+            if (refProc.baseRefType != baseRefType) {
+                //this.refProc = new ReferenceProcessor(baseRefType);
+                this.refProc = new ReferenceProcessor(refProc); // preserve prior settings
+                this.refProc.baseRefType = baseRefType;
+            }
+            refProc.strictRefs = true;
+            return this;
+        }
+        
+        global virtual override Boolean visit(OrExpr orExpr) {
+            orExpr.serLvlOverride = null;
+            if (orExpr.isEmpty()) {
+                orExpr.ser = '';
+                return false;
+            } else {
+                return true;
+            }
+        }
+        
+        global virtual override void afterVisit(OrExpr orExpr) {
+            Integer len = orExpr.children.size();
+            String[] terms = new String[len];
+            for (Integer i=0; i < len; i++) {
+                CondExpr t = orExpr.children[i];
+                if (t.isEmpty()) {
+                    continue;
+                }
+                // if it's a simple expr with a nested cond, then yank out the actual cond that's nested (potentially multiple levels of nesting) and evaluate that instead:
+                if (t.lvl == LVL_SIMPLE) {
+                    t = ((SimpleExpr) t).unwrap();
+                }
+                // below here, a simple expr will not be nested; it must be a relational/equality expr which does not require parenthesis wrapping in this context:
+                if (t.serLvl < LVL_SIMPLE) {
+                    terms[i] = len > 1 ? '(' + t.ser + ')' : t.ser;
+                } else if (t.serLvl == LVL_SIMPLE) {
+                    terms[i] = t.ser;
+                } else {
+                    System.assert(false, 'Encountered element cannot be term of an OR expression: ' + t.ser);
+                }
+            }
+            if (len > 1) {
+                orExpr.ser = String.join(terms, ' OR ');
+            } else {
+                orExpr.ser = terms[0];
+                orExpr.serLvlOverride = orExpr.children[0].serLvl;
+            }
+        }
+        
+        global virtual override Boolean visit(AndExpr andExpr) {
+            andExpr.serLvlOverride = null;
+            if (andExpr.isEmpty()) {
+                andExpr.ser = '';
+                return false;
+            } else {
+                return true;
+            }
+        }
+        
+        global virtual override void afterVisit(AndExpr andExpr) {
+            Integer len = andExpr.children.size();
+            String[] terms = new String[len];
+            for (Integer i=0; i < len; i++) {
+                CondExpr t = andExpr.children[i];
+                if (t.isEmpty()) {
+                    continue;
+                }
+                // if it's a simple expr with a nested cond, then yank out the actual cond that's nested (potentially multiple levels of nesting) and evaluate that instead:
+                if (t.lvl == LVL_SIMPLE) {
+                    t = ((SimpleExpr) t).unwrap();
+                }
+                // below here, a simple expr will not be nested; it must be a relational/equality expr which does not require parenthesis wrapping in this context:
+                if (t.serLvl < LVL_SIMPLE) {
+                    terms[i] = len > 1 ? '(' + t.ser + ')' : t.ser;
+                } else if (t.serLvl == LVL_SIMPLE) {
+                    terms[i] = t.ser;
+                } else {
+                    System.assert(false, 'Encountered element cannot be term of an AND expression: ' + t.ser);
+                }
+            }
+            if (len > 1) {
+                andExpr.ser = String.join(terms, ' AND ');
+            } else {
+                andExpr.ser = terms[0];
+                andExpr.serLvlOverride = andExpr.children[0].serLvl;
+            }
+        }
+        
+        global virtual override Boolean visit(NotExpr notExpr) {
+            notExpr.serLvlOverride = null;
+            if (notExpr.isEmpty()) {
+                notExpr.ser = '';
+                return false;
+            } else {
+                return true;
+            }
+        }
+        
+        global virtual override void afterVisit(NotExpr notExpr) {
+            CondExpr t = notExpr.operand;
+            // if it's a simple expr with a nested cond, then yank out the actual cond that's nested (potentially multiple levels of nesting) and evaluate that instead:
+            if (t.lvl == LVL_SIMPLE) {
+                t = ((SimpleExpr) t).unwrap();
+            }
+            // below here, a simple expr will not be nested; it must be a relational/equality expr which does not require parenthesis wrapping in this context:
+            if (t.serLvl < LVL_SIMPLE) {
+                notExpr.ser = 'NOT (' + t.ser + ')';
+            } else if (t.serLvl == LVL_SIMPLE) {
+                notExpr.ser = 'NOT ' + t.ser;
+            } else {
+                System.assert(false, 'Encountered element cannot be operand of a NOT expression: ' + t.ser);
+            }
+        }
+        
+        global virtual override Boolean visit(SimpleExpr simpleExpr) {
+            simpleExpr.serLvlOverride = null;
+            if (simpleExpr.isEmpty()) {
+                simpleExpr.ser = '';
+                return false;
+            } else {
+                // translate the beginsWith/endsWith/contains ops into a SOQL LIKE condition:
+                Boolean isBeginsWith = simpleExpr.relOp != null && simpleExpr.relOp.ttype == SOQLLexer.KW_BEGINS_WITH,
+                    isEndsWith = simpleExpr.relOp != null && simpleExpr.relOp.ttype == SOQLLexer.KW_ENDS_WITH,
+                    isContains = simpleExpr.relOp != null && simpleExpr.relOp.ttype == SOQLLexer.KW_CONTAINS;
+                // translate beginsWith/endsWith/contains operators:
+                if (isBeginsWith || isEndsWith || isContains) {
                     
-                    global Serializer(Schema.sObjectType baseRefType) {
-                        this.refProc = new ReferenceProcessor(baseRefType);
-                    }
-                    
-                    global Serializer(ReferenceProcessor refProc) {
-                        //System.assert(refProc != null, 'Serializer<init> - Reference Processor cannot be null');
-                        this.refProc = refProc;
-                        if (refProc == null) {
-                            this.refProc = new ReferenceProcessor();
-                        }
-                    }
-                    
-                    global Serializer strictTypes(Schema.sObjectType baseRefType) {
-                        if (refProc.baseRefType != baseRefType) {
-                            //this.refProc = new ReferenceProcessor(baseRefType);
-                            this.refProc = new ReferenceProcessor(refProc); // preserve prior settings
-                            this.refProc.baseRefType = baseRefType;
-                        }
-                        refProc.strictRefs = true;
-                        return this;
-                    }
-                    
-                    global virtual override Boolean visit(OrExpr orExpr) {
-                        orExpr.serLvlOverride = null;
-                        if (orExpr.isEmpty()) {
-                            orExpr.ser = '';
-                            return false;
+                    Value srcVal = simpleExpr.val;
+                    ValueElmt srcElmt;
+                    do {
+                        if (srcVal instanceof ValueList) {
+                            srcElmt = ((ValueList) srcVal).elements[0];
                         } else {
-                            return true;
+                            srcElmt = (ValueElmt) srcVal;
                         }
-                    }
-                    
-                    global virtual override void afterVisit(OrExpr orExpr) {
-                        Integer len = orExpr.children.size();
-                        String[] terms = new String[len];
-                        for (Integer i=0; i < len; i++) {
-                            CondExpr t = orExpr.children[i];
-                            if (t.isEmpty()) {
-                                continue;
-                            }
-                            // if it's a simple expr with a nested cond, then yank out the actual cond that's nested (potentially multiple levels of nesting) and evaluate that instead:
-                            if (t.lvl == LVL_SIMPLE) {
-                                t = ((SimpleExpr) t).unwrap();
-                            }
-                            // below here, a simple expr will not be nested; it must be a relational/equality expr which does not require parenthesis wrapping in this context:
-                            if (t.serLvl < LVL_SIMPLE) {
-                                terms[i] = len > 1 ? '(' + t.ser + ')' : t.ser;
-                            } else if (t.serLvl == LVL_SIMPLE) {
-                                terms[i] = t.ser;
-                            } else {
-                                System.assert(false, 'Encountered element cannot be term of an OR expression: ' + t.ser);
-                            }
-                        }
-                        if (len > 1) {
-                            orExpr.ser = String.join(terms, ' OR ');
+                        // if the ValueElmt is a param, then its param-resolved Value may be a simple ValueElmt or a ValueList, so
+                        // reiterate the above logic on that param-resolved value:
+                        if (srcElmt.paramResolvedValue != null) {
+                            srcVal = srcElmt.paramResolvedValue;
+                            continue;
                         } else {
-                            orExpr.ser = terms[0];
-                            orExpr.serLvlOverride = orExpr.children[0].serLvl;
+                            break;
                         }
-                    }
+                    } while (true);
                     
-                    global virtual override Boolean visit(AndExpr andExpr) {
-                        andExpr.serLvlOverride = null;
-                        if (andExpr.isEmpty()) {
-                            andExpr.ser = '';
-                            return false;
-                        } else {
-                            return true;
-                        }
-                    }
-                    
-                    global virtual override void afterVisit(AndExpr andExpr) {
-                        Integer len = andExpr.children.size();
-                        String[] terms = new String[len];
-                        for (Integer i=0; i < len; i++) {
-                            CondExpr t = andExpr.children[i];
-                            if (t.isEmpty()) {
-                                continue;
-                            }
-                            // if it's a simple expr with a nested cond, then yank out the actual cond that's nested (potentially multiple levels of nesting) and evaluate that instead:
-                            if (t.lvl == LVL_SIMPLE) {
-                                t = ((SimpleExpr) t).unwrap();
-                            }
-                            // below here, a simple expr will not be nested; it must be a relational/equality expr which does not require parenthesis wrapping in this context:
-                            if (t.serLvl < LVL_SIMPLE) {
-                                terms[i] = len > 1 ? '(' + t.ser + ')' : t.ser;
-                            } else if (t.serLvl == LVL_SIMPLE) {
-                                terms[i] = t.ser;
-                            } else {
-                                System.assert(false, 'Encountered element cannot be term of an AND expression: ' + t.ser);
-                            }
-                        }
-                        if (len > 1) {
-                            andExpr.ser = String.join(terms, ' AND ');
-                        } else {
-                            andExpr.ser = terms[0];
-                            andExpr.serLvlOverride = andExpr.children[0].serLvl;
-                        }
-                    }
-                    
-                    global virtual override Boolean visit(NotExpr notExpr) {
-                        notExpr.serLvlOverride = null;
-                        if (notExpr.isEmpty()) {
-                            notExpr.ser = '';
-                            return false;
-                        } else {
-                            return true;
-                        }
-                    }
-                    
-                    global virtual override void afterVisit(NotExpr notExpr) {
-                        CondExpr t = notExpr.operand;
-                        // if it's a simple expr with a nested cond, then yank out the actual cond that's nested (potentially multiple levels of nesting) and evaluate that instead:
-                        if (t.lvl == LVL_SIMPLE) {
-                            t = ((SimpleExpr) t).unwrap();
-                        }
-                        // below here, a simple expr will not be nested; it must be a relational/equality expr which does not require parenthesis wrapping in this context:
-                        if (t.serLvl < LVL_SIMPLE) {
-                            notExpr.ser = 'NOT (' + t.ser + ')';
-                        } else if (t.serLvl == LVL_SIMPLE) {
-                            notExpr.ser = 'NOT ' + t.ser;
-                        } else {
-                            System.assert(false, 'Encountered element cannot be operand of a NOT expression: ' + t.ser);
-                        }
-                    }
-                    
-                    global virtual override Boolean visit(SimpleExpr simpleExpr) {
-                        simpleExpr.serLvlOverride = null;
-                        if (simpleExpr.isEmpty()) {
-                            simpleExpr.ser = '';
-                            return false;
-                        } else {
-                            // translate the beginsWith/endsWith/contains ops into a SOQL LIKE condition:
-                            Boolean isBeginsWith = simpleExpr.relOp != null && simpleExpr.relOp.ttype == SOQLLexer.KW_BEGINS_WITH,
-                                isEndsWith = simpleExpr.relOp != null && simpleExpr.relOp.ttype == SOQLLexer.KW_ENDS_WITH,
-                                isContains = simpleExpr.relOp != null && simpleExpr.relOp.ttype == SOQLLexer.KW_CONTAINS;
-                            // translate beginsWith/endsWith/contains operators:
-                            if (isBeginsWith || isEndsWith || isContains) {
-                                
-                                Value srcVal = simpleExpr.val;
-                                ValueElmt srcElmt;
-                                do {
-                                    if (srcVal instanceof ValueList) {
-                                        srcElmt = ((ValueList) srcVal).elements[0];
-                                    } else {
-                                        srcElmt = (ValueElmt) srcVal;
+                    ValueElmt transElmt = new ValueElmt();
+                    transElmt.loc = srcElmt.loc.clone();
+                    transElmt.loc.injected = true;
+                    transElmt.isString = true;
+                    if (srcElmt.isString == true) {
+                        if (srcElmt.stringLitParts != null) {
+                            // keep all code == 2 escapes ('%' or '_')
+                            // find all '%' or '_' in literal parts and backslash escape them
+                            // tack-on '%' prefix/suffix parts (code=0, unescaped)
+                            String[] transParts = new String[]{};
+                                Integer[] transCodes = new Integer[]{};
+                                    if (isEndsWith || isContains) {
+                                        transParts.add('%');
+                                        transCodes.add(0);
                                     }
-                                    // if the ValueElmt is a param, then its param-resolved Value may be a simple ValueElmt or a ValueList, so
-                                    // reiterate the above logic on that param-resolved value:
-                                    if (srcElmt.paramResolvedValue != null) {
-                                        srcVal = srcElmt.paramResolvedValue;
-                                        continue;
-                                    } else {
-                                        break;
-                                    }
-                                } while (true);
-                                
-                                ValueElmt transElmt = new ValueElmt();
-                                transElmt.loc = srcElmt.loc.clone();
-                                transElmt.loc.injected = true;
-                                transElmt.isString = true;
-                                if (srcElmt.isString == true) {
-                                    if (srcElmt.stringLitParts != null) {
-                                        // keep all code == 2 escapes ('%' or '_')
-                                        // find all '%' or '_' in literal parts and backslash escape them
-                                        // tack-on '%' prefix/suffix parts (code=0, unescaped)
-                                        String[] transParts = new String[]{};
-                                            Integer[] transCodes = new Integer[]{};
-                                                if (isEndsWith || isContains) {
-                                                    transParts.add('%');
-                                                    transCodes.add(0);
-                                                }
-                                        for (Integer i=0; i < srcElmt.stringLitParts.size(); i++) {
-                                            Integer code = srcElmt.stringLitCodes[i];
-                                            String part = srcElmt.stringLitParts[i];
-                                            if (code == 0 && part.containsAny('%_')) {
-                                                part = part.replace('%', '\\%').replace('_', '\\_');
-                                            }
-                                            transParts.add(part);
-                                            transCodes.add(code);
-                                        }
-                                        if (isBeginsWith || isContains) {
-                                            transParts.add('%');
-                                            transCodes.add(0);
-                                        }
-                                        transElmt.stringLitParts = transParts;
-                                        transElmt.stringLitCodes = transCodes;
-                                    } else {
-                                        // find all '%' or '_' and backslash escape them
-                                        // tack-on '%' prefix/suffix (unescaped)
-                                        String coreValue = srcElmt.stringBindValue;
-                                        if (coreValue.containsAny('%_')) {
-                                            coreValue = coreValue.replace('%', '\\%').replace('_', '\\_');
-                                        }
-                                        if (isEndsWith || isContains) {
-                                            coreValue = '%' + coreValue;
-                                        }
-                                        if (isBeginsWith || isContains && coreValue != '%') {
-                                            coreValue = coreValue + '%';
-                                        }
-                                        // set resolvedStringValue here because we've already escaped it in preparation for the LIKE op serialization:
-                                        transElmt.resolvedStringValue = transElmt.stringBindValue = coreValue;
-                                    }
-                                } else {
-                                    // manually serialize the value to a string; note we must also manually manage the simpleExprStack here because the ValueElmt
-                                    // afterVisit method requires its parent SimpleExpr atop the stack (for type checks):
-                                    simpleExprStack.add(simpleExpr);
-                                    try {
-                                        //simpleExpr.val.traverse(this);
-                                        srcElmt.traverse(this);
-                                    } finally {
-                                        simpleExprStack.remove(simpleExprStack.size() - 1);
-                                    }
-                                    if (srcElmt.param != null && srcElmt.paramResolvedValue == null) {
-                                        serErr(srcElmt.loc, simpleExpr.relOp.lexeme + 
-                                               ' operator cannot be applied to unresolved binding parameter [' + srcElmt.ser + ']');
-                                    } else {
-                                        serErr(srcElmt.loc, simpleExpr.relOp.lexeme + 
-                                               ' operator cannot be applied to non-string value [' + srcElmt.ser + ']');
-                                    }
+                            for (Integer i=0; i < srcElmt.stringLitParts.size(); i++) {
+                                Integer code = srcElmt.stringLitCodes[i];
+                                String part = srcElmt.stringLitParts[i];
+                                if (code == 0 && part.containsAny('%_')) {
+                                    part = part.replace('%', '\\%').replace('_', '\\_');
                                 }
-                                
-                                // create an alternate "translation" expr that we'll traverse to produce the strict-SOQL LIKE condition:
-                                SimpleExpr trans = SimpleExprProto.clone();
-                                trans.translatee = simpleExpr;
-                                trans.ref = simpleExpr.ref;
-                                trans.relOp = simpleExpr.relOp.clone();
-                                trans.relOp.ttype = SOQLLexer.KW_LIKE;
-                                trans.relOp.injected = true;
-                                trans.relOpLexeme = trans.relOp.lexeme = 'LIKE';
-                                trans.val = transElmt;
-                                trans.traverse(this);
-                                simpleExpr.ser = trans.ser;
-                                simpleExpr.serLvlOverride = trans.serLvl;
-                                // cancel standard traversal since we just did a manual traversal on the val and translation:
-                                return false;
-                                // translate "between" operator:
-                            } else if (simpleExpr.relOp != null && simpleExpr.relOp.ttype == SOQLLexer.KW_BETWEEN) {
-                                ValueElmt[] elmts = ((ValueList) simpleExpr.val).elements;
-                                Boolean[] inclusiveFlags = simpleExpr.valPairInclusiveFlags;
-                                CondExpr[] pairExprs = new CondExpr[]{};
-                                    for (Integer i=0; i < elmts.size(); i += 2) {
-                                        Integer pairOffset = 0;
-                                        ValueElmt[] valPair = new ValueElmt[2];
-                                        do {
-                                            ValueElmt val = valPair[pairOffset] = elmts[i + pairOffset];
-                                            if (val.param != null) {
-                                                if (val.paramResolvedValue == null) {
-                                                    // TODO: maybe we should allow unbound param names, or make this behavior a parser setting flag?
-                                                    serErr(val.param, 'Value parameter :' + val.param.lexeme + ' is unbound');
-                                                } else if (val.paramResolvedValue instanceof ValueList) {
-                                                    serErr(val.param, 'Value parameter :' + val.param.lexeme +
-                                                           ' is bound to a list; this is not allowed for a between-operator\'s value pair');
-                                                }
-                                                valPair[pairOffset] = (ValueElmt) val.paramResolvedValue;
-                                            }
-                                        } while (++pairOffset < 2);
-                                        
-                                        // throws TypeException:
-                                        ValueElmt[] orderedValPair = heuristicOrderValuePair(valPair[0], valPair[1]);
-                                        Boolean[] valPairIncFlags;
-                                        // if we swapped the element order, then we must also swap the inclusive flags order:
-                                        if (orderedValPair[0] === valPair[0]) {
-                                            valPairIncFlags = new Boolean[]{ inclusiveFlags[i], inclusiveFlags[i + 1] };
-                                                } else {
-                                                    valPairIncFlags = new Boolean[]{ inclusiveFlags[i + 1], inclusiveFlags[i] };
-                                                        }
-                                        
-                                        SimpleExpr[] bounds = new SimpleExpr[2];
-                                        pairOffset = 0;
-                                        do {
-                                            Integer op;
-                                            String opLexeme;
-                                            if (valPairIncFlags[pairOffset]) {
-                                                op = pairOffset == 0 ? SOQLLexer.GREATER_THAN_EQUALS : SOQLLexer.LESS_THAN_EQUALS;
-                                                opLexeme = pairOffset == 0 ? '>=' : '<=';
-                                            } else {
-                                                op = pairOffset == 0 ? SOQLLexer.GREATER_THAN : SOQLLexer.LESS_THAN;
-                                                opLexeme = pairOffset == 0 ? '>' : '<';
-                                            }
-                                            SimpleExpr bound = bounds[pairOffset] = SimpleExprProto.clone();
-                                            bound.translatee = simpleExpr;
-                                            bound.ref = simpleExpr.ref;
-                                            bound.relOp = newInjectedToken(op, opLexeme, simpleExpr.relOp);
-                                            bound.relOpLexeme = opLexeme;
-                                            bound.val = orderedValPair[pairOffset];
-                                        } while (++pairOffset < 2);
-                                        
-                                        AndExpr pairExpr = AndExprProto.clone();
-                                        pairExpr.children = new CondExpr[]{ bounds[0], bounds[1] };
-                                            pairExprs.add(pairExpr);
-                                    } // for elmts
-                                
-                                CondExpr trans;
-                                if (pairExprs.size() > 1) {
-                                    OrExpr orExpr = OrExprProto.clone();
-                                    orExpr.children = pairExprs;
-                                    trans = orExpr;
-                                } else {
-                                    trans = pairExprs[0];
-                                }
-                                trans.traverse(this);
-                                simpleExpr.ser = trans.ser;
-                                simpleExpr.serLvlOverride = trans.serLvl;
-                                // cancel standard traversal since we just did a manual traversal on the translation:
-                                return false;
-                            } else {
-                                // just-in-time and if necessary (i.e. if simpleExpr.ref.refProc is null, then simpleExpr.ref.fieldType is 
-                                // also guaranteed to be null), run this serializer's ReferenceProcessor instance over simpleExpr.ref:
-                                // TODO: should we also check for incompatible baseRefType? (no; let user shoot themselves in foot):
-                                if (simpleExpr.ref != null && simpleExpr.ref.refProc == null && refProc.baseRefType != null) {
-                                    // this call may throw a ReferenceException, depending on this.refProc's settings:
-                                    refProc.visit(simpleExpr.ref);
-                                }
-                                // proceed with standard traversal:
-                                simpleExprStack.add(simpleExpr);
-                                return true;
+                                transParts.add(part);
+                                transCodes.add(code);
                             }
+                            if (isBeginsWith || isContains) {
+                                transParts.add('%');
+                                transCodes.add(0);
+                            }
+                            transElmt.stringLitParts = transParts;
+                            transElmt.stringLitCodes = transCodes;
+                        } else {
+                            // find all '%' or '_' and backslash escape them
+                            // tack-on '%' prefix/suffix (unescaped)
+                            String coreValue = srcElmt.stringBindValue;
+                            if (coreValue.containsAny('%_')) {
+                                coreValue = coreValue.replace('%', '\\%').replace('_', '\\_');
+                            }
+                            if (isEndsWith || isContains) {
+                                coreValue = '%' + coreValue;
+                            }
+                            if (isBeginsWith || isContains && coreValue != '%') {
+                                coreValue = coreValue + '%';
+                            }
+                            // set resolvedStringValue here because we've already escaped it in preparation for the LIKE op serialization:
+                            transElmt.resolvedStringValue = transElmt.stringBindValue = coreValue;
                         }
-                    }
-                    
-                    global virtual override void afterVisit(SimpleExpr simpleExpr) {
+                    } else {
+                        // manually serialize the value to a string; note we must also manually manage the simpleExprStack here because the ValueElmt
+                        // afterVisit method requires its parent SimpleExpr atop the stack (for type checks):
+                        simpleExprStack.add(simpleExpr);
                         try {
-                            if (simpleExpr.nested != null) {
-                                simpleExpr.ser = simpleExpr.nested.ser;
-                                simpleExpr.serLvlOverride = simpleExpr.nested.serLvl;
-                            } else {
-                                String relOpSer = simpleExpr.relOpLexeme.toUpperCase();
-                                // a NOT_EQUALS token may be from a '!=' or '<>' lexeme, but we standardize it to '!=':
-                                if (simpleExpr.relOp.ttype == SOQLLexer.NOT_EQUALS) {
-                                    // diamond-op coders HATE him...
-                                    relOpSer = '!=';
-                                }
-                                simpleExpr.ser = simpleExpr.ref.ser + ' ' + relOpSer + ' ';
-                                String[] valParts;
-                                Boolean isValUnresolvedParamName = false;
-                                // if this simple expr's ValueElmt is a param binding, then its param may have resolved to a ValueList (in 
-                                // simpleExpr.val.paramResolvedValue); in that case this ValueElmt's serParts will have been set to that of
-                                // paramResolvedValue.serParts; this is the only case where a ValueElmt instance can have a serParts != null
-                                // (ValueList instances should always have serParts != null at this time):
-                                if (simpleExpr.val.serParts != null) {                        
-                                    valParts = simpleExpr.val.serParts;
-                                    // else this simple expr must be a ValueElmt instance with a single value part (serParts == null):
-                                } else {
-                                    ValueElmt simpleValElmt;
-                                    if (simpleExpr.val instanceof ValueElmt) {
-                                        simpleValElmt = (ValueElmt) simpleExpr.val;
-                                    }
-                                    if (simpleValElmt != null && simpleValElmt.localReBind != null) {
-                                        isValUnresolvedParamName = true;
-                                    } else {
-                                        isValUnresolvedParamName = simpleValElmt != null && simpleValElmt.paramName != null && simpleValElmt.paramResolvedValue == null;
-                                    }
-                                    valParts = new String[]{ simpleExpr.val.ser };
-                                }
-                                
-                                if (valParts.size() == 0) {
-                                    typeErr(simpleExpr.relOp, 'Value list for ' + simpleExpr.relOpLexeme.toUpperCase() + ' operator cannot be empty');
-                                } else if (simpleExpr.isSetOp || simpleExpr.relOp.ttype == SOQLLexer.KW_BETWEEN) {
-                                    // allow unresolved named-parameter bindings to serialize as the right-hand side of a set op without the wrapping parenthesis -- i.e. avoid
-                                    // serializing "Foo__c IN (:foo)"; instead we want simply "Foo__c IN :foo":
-                                    simpleExpr.ser += isValUnresolvedParamName ? valParts[0] : '(' + String.join(valParts, ',') + ')';
-                                } else {
-                                    if (valParts.size() > 1) {
-                                        typeErr(simpleExpr.relOp, 'Value list cannot be used with ' + simpleExpr.relOpLexeme.toUpperCase() + ' operator');
-                                    }
-                                    simpleExpr.ser += valParts[0];
-                                }
-                                // type checking - if type info is available (i.e. from a preceding ReferenceProcessor traversal), validate it against
-                                // the applied condition operator:
-                                Schema.DescribeFieldResult fieldType = simpleExpr.ref.fieldType;
-                                // fieldType could still be null if it's a polymorphic reference; in that case we ignore it:
-                                if (fieldType != null) {
-                                    // !! in the following TypeExceptions, note the use of originalRelOp; in cases where the current simpleExpr was generated
-                                    // as part of a translation for an original beginsWith/endsWith/contains-op simple expr, we want to report the error on the
-                                    // original operator:
-                                    SOQLLexer.Token[] refChain = simpleExpr.ref.names;
-                                    Integer opType = simpleExpr.relOp.ttype;
-                                    // we cannot allow a blob-type field on the left-hand side of a simple expr:
-                                    // TODO: can equality/inequality ops be used with BLOB fields?
-                                    if (fieldType.getSOAPType() == Schema.SOAPType.base64binary) {
-                                        typeErr(simpleExpr.originalRelOp, 'BLOB field ' + simpleExpr.ref.getFullResolvedDescripString() + ' cannot be used in conjunction with the ' +
-                                                simpleExpr.originalRelOpLexeme + ' operator');
-                                    } else if (opType == SOQLLexer.KW_LIKE && fieldType.getSOAPType() != Schema.SOAPType.String) {
-                                        typeErr(simpleExpr.originalRelOp, 'Field ' + simpleExpr.ref.getFullResolvedDescripString() +
-                                                ' is not the String type required by the ' + simpleExpr.originalRelOpLexeme + ' operator');
-                                    } else if ((opType == SOQLLexer.KW_INCLUDES || opType == SOQLLexer.KW_EXCLUDES)
-                                               && fieldType.getType() != Schema.DisplayType.MultiPicklist) {
-                                                   typeErr(simpleExpr.originalRelOp, 'Field ' + simpleExpr.ref.getFullResolvedDescripString() + ' is not the MultiPicklist type required by the ' +
-                                                           simpleExpr.originalRelOpLexeme + ' operator');
-                                               } else if (relationalOpTypes.contains(opType) && fieldType.getSOAPType() == Schema.SOAPType.Boolean) {
-                                                   typeErr(simpleExpr.originalRelOp, fieldType.getType().name() + ' field ' + simpleExpr.ref.getFullResolvedDescripString() + ' cannot be used in conjunction with the ' +
-                                                           simpleExpr.originalRelOpLexeme + ' operator');
-                                               }
-                                }
-                            }
+                            //simpleExpr.val.traverse(this);
+                            srcElmt.traverse(this);
                         } finally {
-                            // this is in a finally block because we MUST cleanup the stack:
                             simpleExprStack.remove(simpleExprStack.size() - 1);
                         }
-                    }
-                    
-                    global virtual override void afterVisit(RefExpr refExpr) {
-                        refExpr.ser = refExpr.refHead != null ? refExpr.refHead.getFullResolvedString() : refExpr.toString();
-                    }
-                    
-                    global virtual override Boolean visit(ValueList valueList) {
-                        valueList.serParts = new String[]{};
-                            return true;
-                    }
-                    
-                    global virtual override void afterVisit(ValueList valueList) {
-                        for (Value v : valueList.elements) {
-                            if (v instanceof ValueList) {
-                                valueList.serParts.addAll(((ValueList) v).serParts);
-                            } else {
-                                valueList.serParts.add(v.ser);
-                            }
-                        }
-                    }
-                    
-                    global virtual override void afterVisit(ValueElmt v) {
-                        v.serParts = null;
-                        if (v.localReBind != null) {
-                            v.ser = ':' + v.localReBind.getLocalVar();
-                        } else if (v.param != null) {
-                            if (v.paramResolvedValue != null) {
-                                //System.assert(false, v.paramResolvedValue);
-                                // TODO: make a SOQLParser setting whereby named params output to SOQL are not allowed; for now we always allow it:
-                                v.ser = v.paramResolvedValue.ser;
-                                v.serParts = v.paramResolvedValue.serParts;
-                            } else if (v.paramName != null) {
-                                v.ser = ':' + v.paramName.lexeme;
-                            } else if (v.paramIndex != null) {
-                                //v.ser = ':' + v.paramIndex.lexeme;
-                                serErr(v.param, 'Indexed parameter :' + v.paramIndex.lexeme + ' cannot be output to SOQL');
-                                // !! this branch should be unreachable because anonymous params must be bound at time of parse:
-                            } else if (v.paramAnon != null) {
-                                //v.ser = '?';
-                                serErr(v.param, 'Anonymous parameter cannot be output to SOQL');
-                            }
+                        if (srcElmt.param != null && srcElmt.paramResolvedValue == null) {
+                            serErr(srcElmt.loc, simpleExpr.relOp.lexeme + 
+                                    ' operator cannot be applied to unresolved binding parameter [' + srcElmt.ser + ']');
                         } else {
-                            if (v.kwLit != null) {
-                                v.ser = v.kwLit.lexeme.toLowerCase();
-                                SimpleExpr simpleExpr = simpleExprStack[simpleExprStack.size() - 1];
-                                Integer op = simpleExpr.relOp.ttype;
-                                if (v.kwLit.ttype == SOQLLexer.KW_TRUE || v.kwLit.ttype == SOQLLexer.KW_FALSE) {
-//                        System.assert(false, v.kwLit);
-                                    matchType(v, Schema.SOAPType.Boolean, 'Boolean');
-                                    // boolean value cannot be right-hand side of a relational op:
-                                    if (op == SOQLLexer.KW_BETWEEN || relationalOpTypes.contains(op)) {
-                                        typeErr(simpleExpr.originalRelOp, simpleExpr.originalRelOpLexeme + ' operator cannot accept a Boolean right-hand side value');
+                            serErr(srcElmt.loc, simpleExpr.relOp.lexeme + 
+                                    ' operator cannot be applied to non-string value [' + srcElmt.ser + ']');
+                        }
+                    }
+                    
+                    // create an alternate "translation" expr that we'll traverse to produce the strict-SOQL LIKE condition:
+                    SimpleExpr trans = SimpleExprProto.clone();
+                    trans.translatee = simpleExpr;
+                    trans.ref = simpleExpr.ref;
+                    trans.relOp = simpleExpr.relOp.clone();
+                    trans.relOp.ttype = SOQLLexer.KW_LIKE;
+                    trans.relOp.injected = true;
+                    trans.relOpLexeme = trans.relOp.lexeme = 'LIKE';
+                    trans.val = transElmt;
+                    trans.traverse(this);
+                    simpleExpr.ser = trans.ser;
+                    simpleExpr.serLvlOverride = trans.serLvl;
+                    // cancel standard traversal since we just did a manual traversal on the val and translation:
+                    return false;
+                    // translate "between" operator:
+                } else if (simpleExpr.relOp != null && simpleExpr.relOp.ttype == SOQLLexer.KW_BETWEEN) {
+                    ValueElmt[] elmts = ((ValueList) simpleExpr.val).elements;
+                    Boolean[] inclusiveFlags = simpleExpr.valPairInclusiveFlags;
+                    CondExpr[] pairExprs = new CondExpr[]{};
+                        for (Integer i=0; i < elmts.size(); i += 2) {
+                            Integer pairOffset = 0;
+                            ValueElmt[] valPair = new ValueElmt[2];
+                            do {
+                                ValueElmt val = valPair[pairOffset] = elmts[i + pairOffset];
+                                if (val.param != null) {
+                                    if (val.paramResolvedValue == null) {
+                                        // TODO: maybe we should allow unbound param names, or make this behavior a parser setting flag?
+                                        serErr(val.param, 'Value parameter :' + val.param.lexeme + ' is unbound');
+                                    } else if (val.paramResolvedValue instanceof ValueList) {
+                                        serErr(val.param, 'Value parameter :' + val.param.lexeme +
+                                                ' is bound to a list; this is not allowed for a between-operator\'s value pair');
                                     }
-                                    // null value cannot be right-hand side of a contains/beginsWith/endsWith/between or a LIKE or a relational op:
-                                } else if (v.kwLit.ttype == SOQLLexer.KW_NULL) {
-                                    if (op == SOQLLexer.KW_CONTAINS || op == SOQLLexer.KW_BEGINS_WITH || op == SOQLLexer.KW_ENDS_WITH
-                                        || op == SOQLLexer.KW_BETWEEN || op == SOQLLexer.KW_LIKE || relationalOpTypes.contains(op)) {
-                                            typeErr(simpleExpr.originalRelOp, simpleExpr.originalRelOpLexeme + ' operator cannot accept a null right-hand side value');
-                                        }
+                                    valPair[pairOffset] = (ValueElmt) val.paramResolvedValue;
                                 }
-                            } else if (v.numberLit != null) {
-                                v.ser = v.numberLit.toPlainString();
-                                matchType(v, Schema.SOAPType.Integer, Schema.SOAPType.Double, 'Number');
-                            } else if (v.specialNumberLit != null) {
-                                typeErr(v.loc, 'Number value ' + v.specialNumberLit + ' cannot be represented in SOQL');
-                            } else if (v.dateTimeLit != null) {
-                                String secs = ('00' + v.dateTimeLit.secondGmt()).right(2) + '.' + ('000' + v.dateTimeLit.millisecondGmt()).right(3);
-                                //Decimal secs = v.dateTimeLit.secondGmt() + v.dateTimeLit.millisecondGmt() / 1000.0;
-                                // note that secs may be a decimal, which is allowed in SOQL syntax:
-                                v.ser = v.dateTimeLit.formatGmt('yyyy-MM-dd') + 'T' + v.dateTimeLit.formatGmt('HH:mm') + ':' + secs + 'Z'; /*(secs == 0 ? '00' : '' + secs.toPlainString()) + 'Z'*/
-                                matchType(v, Schema.SOAPType.Date, Schema.SOAPType.DateTime, 'DateTime');
-                            } else if (v.dateLit != null) {
-                                v.ser = DateTime.newInstanceGMT(v.dateLit.year(), v.dateLit.month(), v.dateLit.day(), 0, 0, 0).formatGMT('yyyy-MM-dd');
-                                matchType(v, Schema.SOAPType.Date, Schema.SOAPType.DateTime, 'Date');
-                            } else if (v.dateFormula != null) {
-                                v.ser = v.dateFormula.lexeme.toUpperCase();
-                                if (v.dateFormula_N != null) {
-                                    v.ser += ':' + v.dateFormula_N;
-                                }
-                                matchType(v, Schema.SOAPType.Date, Schema.SOAPType.DateTime, 'Date Formula');
-                            } else if (v.isString == true) {
-                                // find the closest parent simple expr that has a req/eq operator:
-                                SimpleExpr relEqExpr; // = closestRelEqExpr();
-                                Integer len = simpleExprStack.size();
-                                for (Integer i=len - 1; i >= 0; i--) {
-                                    SimpleExpr simp = simpleExprStack[i];
-                                    if (simp.relOp != null) {
-                                        relEqExpr = simp;
-                                        break;
-                                    }
-                                }
-                                // if this value isn't the target of a LIKE op, then any '\%' or '\_' escape sequences should be reduced to '%' and
-                                // '_' respectively:
-                                if (relEqExpr == null || relEqExpr.relOp == null || relEqExpr.relOp.ttype != SOQLLexer.KW_LIKE) {
-                                    // since this is not the target of a like, backslashed '%' and '_' will be reduced to plain '%' and '_' respectively:
-                                    v.ser = v.getStringSer(false);
+                            } while (++pairOffset < 2);
+                            
+                            // throws TypeException:
+                            ValueElmt[] orderedValPair = heuristicOrderValuePair(valPair[0], valPair[1]);
+                            Boolean[] valPairIncFlags;
+                            // if we swapped the element order, then we must also swap the inclusive flags order:
+                            if (orderedValPair[0] === valPair[0]) {
+                                valPairIncFlags = new Boolean[]{ inclusiveFlags[i], inclusiveFlags[i + 1] };
+                                    } else {
+                                        valPairIncFlags = new Boolean[]{ inclusiveFlags[i + 1], inclusiveFlags[i] };
+                                            }
+                            
+                            SimpleExpr[] bounds = new SimpleExpr[2];
+                            pairOffset = 0;
+                            do {
+                                Integer op;
+                                String opLexeme;
+                                if (valPairIncFlags[pairOffset]) {
+                                    op = pairOffset == 0 ? SOQLLexer.GREATER_THAN_EQUALS : SOQLLexer.LESS_THAN_EQUALS;
+                                    opLexeme = pairOffset == 0 ? '>=' : '<=';
                                 } else {
-                                    // since this is the target of a like, backslashed '%' and '_' will retain their backslashes:
-                                    v.ser = v.getStringSer(true);
+                                    op = pairOffset == 0 ? SOQLLexer.GREATER_THAN : SOQLLexer.LESS_THAN;
+                                    opLexeme = pairOffset == 0 ? '>' : '<';
                                 }
-                                matchType(v, Schema.SOAPType.String, Schema.SOAPType.Id, 'String');
-                            }
+                                SimpleExpr bound = bounds[pairOffset] = SimpleExprProto.clone();
+                                bound.translatee = simpleExpr;
+                                bound.ref = simpleExpr.ref;
+                                bound.relOp = newInjectedToken(op, opLexeme, simpleExpr.relOp);
+                                bound.relOpLexeme = opLexeme;
+                                bound.val = orderedValPair[pairOffset];
+                            } while (++pairOffset < 2);
+                            
+                            AndExpr pairExpr = AndExprProto.clone();
+                            pairExpr.children = new CondExpr[]{ bounds[0], bounds[1] };
+                                pairExprs.add(pairExpr);
+                        } // for elmts
+                    
+                    CondExpr trans;
+                    if (pairExprs.size() > 1) {
+                        OrExpr orExpr = OrExprProto.clone();
+                        orExpr.children = pairExprs;
+                        trans = orExpr;
+                    } else {
+                        trans = pairExprs[0];
+                    }
+                    trans.traverse(this);
+                    simpleExpr.ser = trans.ser;
+                    simpleExpr.serLvlOverride = trans.serLvl;
+                    // cancel standard traversal since we just did a manual traversal on the translation:
+                    return false;
+                } else {
+                    // just-in-time and if necessary (i.e. if simpleExpr.ref.refProc is null, then simpleExpr.ref.fieldType is 
+                    // also guaranteed to be null), run this serializer's ReferenceProcessor instance over simpleExpr.ref:
+                    // TODO: should we also check for incompatible baseRefType? (no; let user shoot themselves in foot):
+                    if (simpleExpr.ref != null && simpleExpr.ref.refProc == null && refProc.baseRefType != null) {
+                        // this call may throw a ReferenceException, depending on this.refProc's settings:
+                        refProc.visit(simpleExpr.ref);
+                    }
+                    // proceed with standard traversal:
+                    simpleExprStack.add(simpleExpr);
+                    return true;
+                }
+            }
+        }
+        
+        global virtual override void afterVisit(SimpleExpr simpleExpr) {
+            try {
+                if (simpleExpr.nested != null) {
+                    simpleExpr.ser = simpleExpr.nested.ser;
+                    simpleExpr.serLvlOverride = simpleExpr.nested.serLvl;
+                } else {
+                    String relOpSer = simpleExpr.relOpLexeme.toUpperCase();
+                    // a NOT_EQUALS token may be from a '!=' or '<>' lexeme, but we standardize it to '!=':
+                    if (simpleExpr.relOp.ttype == SOQLLexer.NOT_EQUALS) {
+                        // diamond-op coders HATE him...
+                        relOpSer = '!=';
+                    }
+                    simpleExpr.ser = simpleExpr.ref.ser + ' ' + relOpSer + ' ';
+                    String[] valParts;
+                    Boolean isValUnresolvedParamName = false;
+                    // if this simple expr's ValueElmt is a param binding, then its param may have resolved to a ValueList (in 
+                    // simpleExpr.val.paramResolvedValue); in that case this ValueElmt's serParts will have been set to that of
+                    // paramResolvedValue.serParts; this is the only case where a ValueElmt instance can have a serParts != null
+                    // (ValueList instances should always have serParts != null at this time):
+                    if (simpleExpr.val.serParts != null) {                        
+                        valParts = simpleExpr.val.serParts;
+                        // else this simple expr must be a ValueElmt instance with a single value part (serParts == null):
+                    } else {
+                        ValueElmt simpleValElmt;
+                        if (simpleExpr.val instanceof ValueElmt) {
+                            simpleValElmt = (ValueElmt) simpleExpr.val;
                         }
+                        if (simpleValElmt != null && simpleValElmt.localReBind != null) {
+                            isValUnresolvedParamName = true;
+                        } else {
+                            isValUnresolvedParamName = simpleValElmt != null && simpleValElmt.paramName != null && simpleValElmt.paramResolvedValue == null;
+                        }
+                        valParts = new String[]{ simpleExpr.val.ser };
                     }
                     
-                    void matchType(ValueElmt v, Schema.SOAPType acceptedType, String rhsTypeDescrip) {
-                        matchType(v, new Schema.SOAPType[]{ acceptedType }, rhsTypeDescrip);
+                    if (valParts.size() == 0) {
+                        typeErr(simpleExpr.relOp, 'Value list for ' + simpleExpr.relOpLexeme.toUpperCase() + ' operator cannot be empty');
+                    } else if (simpleExpr.isSetOp || simpleExpr.relOp.ttype == SOQLLexer.KW_BETWEEN) {
+                        // allow unresolved named-parameter bindings to serialize as the right-hand side of a set op without the wrapping parenthesis -- i.e. avoid
+                        // serializing "Foo__c IN (:foo)"; instead we want simply "Foo__c IN :foo":
+                        simpleExpr.ser += isValUnresolvedParamName ? valParts[0] : '(' + String.join(valParts, ',') + ')';
+                    } else {
+                        if (valParts.size() > 1) {
+                            typeErr(simpleExpr.relOp, 'Value list cannot be used with ' + simpleExpr.relOpLexeme.toUpperCase() + ' operator');
+                        }
+                        simpleExpr.ser += valParts[0];
                     }
-                    
-                    void matchType(ValueElmt v, Schema.SOAPType acceptedType1, Schema.SOAPType acceptedType2, String rhsTypeDescrip) {
-                        matchType(v, new Schema.SOAPType[]{ acceptedType1, acceptedType2 }, rhsTypeDescrip);
-                    }
-                    
-                    // this method should be called AFTER v.ser is set:
-                    void matchType(ValueElmt v, Schema.SOAPType[] acceptedTypes, String rhsTypeDescrip) {
-                        // get the closest simple expr parent to this value:
-                        SimpleExpr simpleExpr = simpleExprStack[simpleExprStack.size() - 1];
-                        // if simpleExpr.ref.fieldType has been resolved (i.e. via a preceding traversal of ReferenceProcessor), then continue
-                        // to validate the left-hand side vs. right-hand side types; if not resolved then return:
-                        Schema.DescribeFieldResult fieldType = simpleExpr.ref.fieldType;
-                        if (fieldType == null) {
-                            return;
-                        }
-                        // field type will have been resolved above, but it may still be left null if it was a polymorphic reference;
-                        // in that case bypass these type checks:
-                        Schema.SOAPType sType = fieldType.getSOAPType();
-                        Boolean match = false;
-                        for (Schema.SOAPType aType : acceptedTypes) {
-                            if (sType == aType) {
-                                match = true;
-                                break;
-                            }
-                        }
-                        if (!match) {
-                            typeErr(v.loc, 'sObject field ' + simpleExpr.ref.getFullResolvedDescripString() + 
-                                    ' expected a right-hand side ' + sType.name() + ' value; got a ' + rhsTypeDescrip + ' ' + v.ser);
-                        }
+                    // type checking - if type info is available (i.e. from a preceding ReferenceProcessor traversal), validate it against
+                    // the applied condition operator:
+                    Schema.DescribeFieldResult fieldType = simpleExpr.ref.fieldType;
+                    // fieldType could still be null if it's a polymorphic reference; in that case we ignore it:
+                    if (fieldType != null) {
+                        // !! in the following TypeExceptions, note the use of originalRelOp; in cases where the current simpleExpr was generated
+                        // as part of a translation for an original beginsWith/endsWith/contains-op simple expr, we want to report the error on the
+                        // original operator:
+                        SOQLLexer.Token[] refChain = simpleExpr.ref.names;
+                        Integer opType = simpleExpr.relOp.ttype;
+                        // we cannot allow a blob-type field on the left-hand side of a simple expr:
+                        // TODO: can equality/inequality ops be used with BLOB fields?
+                        if (fieldType.getSOAPType() == Schema.SOAPType.base64binary) {
+                            typeErr(simpleExpr.originalRelOp, 'BLOB field ' + simpleExpr.ref.getFullResolvedDescripString() + ' cannot be used in conjunction with the ' +
+                                    simpleExpr.originalRelOpLexeme + ' operator');
+                        } else if (opType == SOQLLexer.KW_LIKE && fieldType.getSOAPType() != Schema.SOAPType.String) {
+                            typeErr(simpleExpr.originalRelOp, 'Field ' + simpleExpr.ref.getFullResolvedDescripString() +
+                                    ' is not the String type required by the ' + simpleExpr.originalRelOpLexeme + ' operator');
+                        } else if ((opType == SOQLLexer.KW_INCLUDES || opType == SOQLLexer.KW_EXCLUDES)
+                                    && fieldType.getType() != Schema.DisplayType.MultiPicklist) {
+                                        typeErr(simpleExpr.originalRelOp, 'Field ' + simpleExpr.ref.getFullResolvedDescripString() + ' is not the MultiPicklist type required by the ' +
+                                                simpleExpr.originalRelOpLexeme + ' operator');
+                                    } else if (relationalOpTypes.contains(opType) && fieldType.getSOAPType() == Schema.SOAPType.Boolean) {
+                                        typeErr(simpleExpr.originalRelOp, fieldType.getType().name() + ' field ' + simpleExpr.ref.getFullResolvedDescripString() + ' cannot be used in conjunction with the ' +
+                                                simpleExpr.originalRelOpLexeme + ' operator');
+                                    }
                     }
                 }
+            } finally {
+                // this is in a finally block because we MUST cleanup the stack:
+                simpleExprStack.remove(simpleExprStack.size() - 1);
+            }
+        }
+        
+        global virtual override void afterVisit(RefExpr refExpr) {
+            refExpr.ser = refExpr.refHead != null ? refExpr.refHead.getFullResolvedString() : refExpr.toString();
+        }
+        
+        global virtual override Boolean visit(ValueList valueList) {
+            valueList.serParts = new String[]{};
+                return true;
+        }
+        
+        global virtual override void afterVisit(ValueList valueList) {
+            for (Value v : valueList.elements) {
+                if (v instanceof ValueList) {
+                    valueList.serParts.addAll(((ValueList) v).serParts);
+                } else {
+                    valueList.serParts.add(v.ser);
+                }
+            }
+        }
+        
+        global virtual override void afterVisit(ValueElmt v) {
+            v.serParts = null;
+            if (v.localReBind != null) {
+                v.ser = ':' + v.localReBind.getLocalVar();
+            } else if (v.param != null) {
+                if (v.paramResolvedValue != null) {
+                    //System.assert(false, v.paramResolvedValue);
+                    // TODO: make a SOQLParser setting whereby named params output to SOQL are not allowed; for now we always allow it:
+                    v.ser = v.paramResolvedValue.ser;
+                    v.serParts = v.paramResolvedValue.serParts;
+                } else if (v.paramName != null) {
+                    v.ser = ':' + v.paramName.lexeme;
+                } else if (v.paramIndex != null) {
+                    //v.ser = ':' + v.paramIndex.lexeme;
+                    serErr(v.param, 'Indexed parameter :' + v.paramIndex.lexeme + ' cannot be output to SOQL');
+                    // !! this branch should be unreachable because anonymous params must be bound at time of parse:
+                } else if (v.paramAnon != null) {
+                    //v.ser = '?';
+                    serErr(v.param, 'Anonymous parameter cannot be output to SOQL');
+                }
+            } else {
+                if (v.kwLit != null) {
+                    v.ser = v.kwLit.lexeme.toLowerCase();
+                    SimpleExpr simpleExpr = simpleExprStack[simpleExprStack.size() - 1];
+                    Integer op = simpleExpr.relOp.ttype;
+                    if (v.kwLit.ttype == SOQLLexer.KW_TRUE || v.kwLit.ttype == SOQLLexer.KW_FALSE) {
+                        // System.assert(false, v.kwLit);
+                        matchType(v, Schema.SOAPType.Boolean, 'Boolean');
+                        // boolean value cannot be right-hand side of a relational op:
+                        if (op == SOQLLexer.KW_BETWEEN || relationalOpTypes.contains(op)) {
+                            typeErr(simpleExpr.originalRelOp, simpleExpr.originalRelOpLexeme + ' operator cannot accept a Boolean right-hand side value');
+                        }
+                        // null value cannot be right-hand side of a contains/beginsWith/endsWith/between or a LIKE or a relational op:
+                    } else if (v.kwLit.ttype == SOQLLexer.KW_NULL) {
+                        if (op == SOQLLexer.KW_CONTAINS || op == SOQLLexer.KW_BEGINS_WITH || op == SOQLLexer.KW_ENDS_WITH
+                            || op == SOQLLexer.KW_BETWEEN || op == SOQLLexer.KW_LIKE || relationalOpTypes.contains(op)) {
+                                typeErr(simpleExpr.originalRelOp, simpleExpr.originalRelOpLexeme + ' operator cannot accept a null right-hand side value');
+                            }
+                    }
+                } else if (v.numberLit != null) {
+                    v.ser = v.numberLit.toPlainString();
+                    matchType(v, Schema.SOAPType.Integer, Schema.SOAPType.Double, 'Number');
+                } else if (v.specialNumberLit != null) {
+                    typeErr(v.loc, 'Number value ' + v.specialNumberLit + ' cannot be represented in SOQL');
+                } else if (v.dateTimeLit != null) {
+                    String secs = ('00' + v.dateTimeLit.secondGmt()).right(2) + '.' + ('000' + v.dateTimeLit.millisecondGmt()).right(3);
+                    //Decimal secs = v.dateTimeLit.secondGmt() + v.dateTimeLit.millisecondGmt() / 1000.0;
+                    // note that secs may be a decimal, which is allowed in SOQL syntax:
+                    v.ser = v.dateTimeLit.formatGmt('yyyy-MM-dd') + 'T' + v.dateTimeLit.formatGmt('HH:mm') + ':' + secs + 'Z'; /*(secs == 0 ? '00' : '' + secs.toPlainString()) + 'Z'*/
+                    matchType(v, Schema.SOAPType.Date, Schema.SOAPType.DateTime, 'DateTime');
+                } else if (v.dateLit != null) {
+                    v.ser = DateTime.newInstanceGMT(v.dateLit.year(), v.dateLit.month(), v.dateLit.day(), 0, 0, 0).formatGMT('yyyy-MM-dd');
+                    matchType(v, Schema.SOAPType.Date, Schema.SOAPType.DateTime, 'Date');
+                } else if (v.dateFormula != null) {
+                    v.ser = v.dateFormula.lexeme.toUpperCase();
+                    if (v.dateFormula_N != null) {
+                        v.ser += ':' + v.dateFormula_N;
+                    }
+                    matchType(v, Schema.SOAPType.Date, Schema.SOAPType.DateTime, 'Date Formula');
+                } else if (v.isString == true) {
+                    // find the closest parent simple expr that has a req/eq operator:
+                    SimpleExpr relEqExpr; // = closestRelEqExpr();
+                    Integer len = simpleExprStack.size();
+                    for (Integer i=len - 1; i >= 0; i--) {
+                        SimpleExpr simp = simpleExprStack[i];
+                        if (simp.relOp != null) {
+                            relEqExpr = simp;
+                            break;
+                        }
+                    }
+                    // if this value isn't the target of a LIKE op, then any '\%' or '\_' escape sequences should be reduced to '%' and
+                    // '_' respectively:
+                    if (relEqExpr == null || relEqExpr.relOp == null || relEqExpr.relOp.ttype != SOQLLexer.KW_LIKE) {
+                        // since this is not the target of a like, backslashed '%' and '_' will be reduced to plain '%' and '_' respectively:
+                        v.ser = v.getStringSer(false);
+                    } else {
+                        // since this is the target of a like, backslashed '%' and '_' will retain their backslashes:
+                        v.ser = v.getStringSer(true);
+                    }
+                    matchType(v, Schema.SOAPType.String, Schema.SOAPType.Id, 'String');
+                }
+            }
+        }
+        
+        void matchType(ValueElmt v, Schema.SOAPType acceptedType, String rhsTypeDescrip) {
+            matchType(v, new Schema.SOAPType[]{ acceptedType }, rhsTypeDescrip);
+        }
+        
+        void matchType(ValueElmt v, Schema.SOAPType acceptedType1, Schema.SOAPType acceptedType2, String rhsTypeDescrip) {
+            matchType(v, new Schema.SOAPType[]{ acceptedType1, acceptedType2 }, rhsTypeDescrip);
+        }
+        
+        // this method should be called AFTER v.ser is set:
+        void matchType(ValueElmt v, Schema.SOAPType[] acceptedTypes, String rhsTypeDescrip) {
+            // get the closest simple expr parent to this value:
+            SimpleExpr simpleExpr = simpleExprStack[simpleExprStack.size() - 1];
+            // if simpleExpr.ref.fieldType has been resolved (i.e. via a preceding traversal of ReferenceProcessor), then continue
+            // to validate the left-hand side vs. right-hand side types; if not resolved then return:
+            Schema.DescribeFieldResult fieldType = simpleExpr.ref.fieldType;
+            if (fieldType == null) {
+                return;
+            }
+            // field type will have been resolved above, but it may still be left null if it was a polymorphic reference;
+            // in that case bypass these type checks:
+            Schema.SOAPType sType = fieldType.getSOAPType();
+            Boolean match = false;
+            for (Schema.SOAPType aType : acceptedTypes) {
+                if (sType == aType) {
+                    match = true;
+                    break;
+                }
+            }
+            if (!match) {
+                typeErr(v.loc, 'sObject field ' + simpleExpr.ref.getFullResolvedDescripString() + 
+                        ' expected a right-hand side ' + sType.name() + ' value; got a ' + rhsTypeDescrip + ' ' + v.ser);
+            }
+        }
+    }
     
     // Expression levels; smaller numbers indicate "higher" nodes in the parse tree. A "raise" is a move from a larger lvl# to a smaller lvl#:
     private static final Integer LVL_OR     = 0;

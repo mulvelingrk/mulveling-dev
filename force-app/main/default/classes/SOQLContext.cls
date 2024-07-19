@@ -360,6 +360,47 @@ global class SOQLContext {
     // modify the resulting query:
     global String getQuery(String queryString, Map<String, Object> namedBinds, Object[] anonymousBinds, 
             SOQLParser.LocalRebindPool rebindPool) {
+        
+        return getSOQL(queryString, namedBinds, anonymousBinds, rebindPool).ser();
+    }
+
+    // =============================================================================================================
+
+    global SOQLParser.SOQL getSOQL(String queryString) {
+        return getSOQL(queryString, AllNullBinds);
+    }
+
+    global SOQLParser.SOQL getSOQL(String queryString, Object val1) {
+        return getSOQL(queryString, new Object[]{ val1, null, null, null, null });
+    }
+    
+    global SOQLParser.SOQL getSOQL(String queryString, Object val1, Object val2) {
+        return getSOQL(queryString, new Object[]{ val1, val2, null, null, null });
+    }
+    
+    global SOQLParser.SOQL getSOQL(String queryString, Object val1, Object val2, Object val3) {
+        return getSOQL(queryString, new Object[]{ val1, val2, val3, null, null  });
+    }
+
+    global SOQLParser.SOQL getSOQL(String queryString, Object val1, Object val2, Object val3, Object val4) {
+        return getSOQL(queryString, new Object[]{ val1, val2, val3, val4, null });
+    }
+
+    global SOQLParser.SOQL getSOQL(String queryString, Object val1, Object val2, Object val3, Object val4, Object val5) {
+        return getSOQL(queryString, new Object[]{ val1, val2, val3, val4, val5 });
+    }
+
+    global SOQLParser.SOQL getSOQL(String queryString, Object[] anonymousBinds) {
+        Map<String, Object> emptyNamedBinds = new Map<String, Object>();
+        SOQLParser.LocalRebindPool nullRebinds = null;
+        return getSOQL(queryString, emptyNamedBinds, anonymousBinds, nullRebinds);
+    }
+
+    // Returns the equivalent vanilla-SOQL query (can be run via Database.query or used to construct a QueryLocator)
+    // after asserting the security levels and rules specified by this SOQLContext - which may either throw error, or
+    // modify the resulting query:
+    global SOQLParser.SOQL getSOQL(String queryString, Map<String, Object> namedBinds, Object[] anonymousBinds, 
+            SOQLParser.LocalRebindPool rebindPool) {
         // Works like startSystemMode(), but only acts like System mode with regard to record sharing, not CRUD/FLS:
         RKSecurity.SecuritySavepoint sp = new RKSecurity.SecuritySavepoint();
         try {
@@ -382,11 +423,18 @@ global class SOQLContext {
             assertRules(soql)
                 .bind();
             //return sharingModel.query(soql.ser(false), rebindPool);
-            return soql.ser(false);
+
+            // We call serialization, even as we discard its value, just to tigger any potential Serialization 
+            // exceptions before returning. This way we know the returned SOQL is completely valid against the 
+            // full specifications of this SOQLContext:
+            //soql.ser(false);
+            return soql;
         } finally {
             RKSecurity.restore(sp);
         }
     }
+
+    // =============================================================================================================
 
     // Throws RuleViolationException:
     global SOQLParser.SOQL validate(String queryString) {
