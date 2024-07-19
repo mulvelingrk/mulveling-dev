@@ -1,6 +1,9 @@
 /*
  * Mike Ulveling
  * 
+ * !! See here for documention of usage and features:
+ * https://jira-stars.atlassian.net/wiki/spaces/~557058059effa53d514c58a5b7d64f49153424/pages/2576678921/SOQLParser
+ * 
  * Closes the loop on our most useful SOQLParser / RKSecurity / RKShare features, and adds configurable Query Rules.
  * Queries should be issued thourgh a properly crafted SOQLContext instance, rather than via Database.query or inline SOQL 
  * queries (Apex bracket [] syntax).

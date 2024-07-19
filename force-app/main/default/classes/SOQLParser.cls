@@ -3,8 +3,8 @@
 *
 * Don't touch this code if you're not me.
 *
-* !! See here for full documention of usage and features:
-* https://docs.google.com/document/d/1WrjDwrvI_HrDIV7pJX8P9aytLqD_PATR_10tqhIwk7o/edit
+* !! See here for documention of usage and features:
+* https://jira-stars.atlassian.net/wiki/spaces/~557058059effa53d514c58a5b7d64f49153424/pages/2576678921/SOQLParser
 *
 * Description:
 * Bottom-up expression parser for very efficient parsing of SOQL condition expressions (recursive-descent parsing of infix expressions is
@@ -2516,7 +2516,7 @@ start = start.addYears(startOffset);
         if (x.numberLit != null && y.numberLit != null) {
             rev = x.numberLit > y.numberLit;
         } else if (x.isString == true && y.isString == true) {
-            // was know it's not a like-op target because this method is only used for "between" ops:
+            // we know it's not a like-op target because this method is only used for "between" ops:
             final Boolean isLikeOpTarget = false;
             String xVal = x.resolvedStringValue != null ? x.resolvedStringValue : x.getStringValue(isLikeOpTarget);
             String yVal = y.resolvedStringValue != null ? y.resolvedStringValue : y.getStringValue(isLikeOpTarget);
