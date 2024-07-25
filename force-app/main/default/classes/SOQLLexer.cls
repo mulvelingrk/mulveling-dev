@@ -10,7 +10,7 @@
 public class SOQLLexer {
     // This table is used by the parser to determine whether a next token instigates a RAISE, EXTEND, or MERGE action:
     public static final Integer[] ExprLevelTable = new Integer[]{};
-        public static Integer tokid = 0;
+    public static Integer tokid = 0;
     
     static Integer tokid(Integer exprRoutingLvl) {
         ExprLevelTable.add(exprRoutingLvl);
@@ -93,17 +93,17 @@ public class SOQLLexer {
     
     // spits out a token in a format useful for debugging lex'd token streams:
     public static String toString(Token tok) {
-    if (tok.ttype >= KEYWORD_MINIMUM) {
-        return tok.lexeme.toUpperCase();
-    } else if (tok.ttype == NAME) {
-        return 'NAME[' + tok.lexeme + ']';
-    } else if (tok.ttype == DECIMAL_NUMBER) {
-        return 'NUMBER[' + tok.lexeme + ']';
-    } else if (tok.ttype == STRING_LITERAL) {
-        return 'STRING[' + tok.lexeme + ']';
-    } else {
-        return tok.lexeme;
-    }
+        if (tok.ttype >= KEYWORD_MINIMUM) {
+            return tok.lexeme.toUpperCase();
+        } else if (tok.ttype == NAME) {
+            return 'NAME[' + tok.lexeme + ']';
+        } else if (tok.ttype == DECIMAL_NUMBER) {
+            return 'NUMBER[' + tok.lexeme + ']';
+        } else if (tok.ttype == STRING_LITERAL) {
+            return 'STRING[' + tok.lexeme + ']';
+        } else {
+            return tok.lexeme;
+        }
     }
     
     // 1-char punctuators; no expression-lvl raising on any of these:
@@ -472,7 +472,8 @@ public class SOQLLexer {
                         // currently looking at:
                         tsIndex1 = wbIndex - 3; // guaranteed to be >= 0 and < TransStateTable1.size()
                         ch1 = streamArray[index];
-                        // else we're looking at EOF:
+                    
+                    // else we're looking at EOF:
                     } else {
                         //toks[++top] = termEOF(cursor);
                         Token penTok = top > -1 ? toks[top] : null;
@@ -586,14 +587,15 @@ public class SOQLLexer {
                             cursor.col += tok.lexeme.length();
                             toks[++top] = tok;
                             continue;
-                            // else, we have either a complex string or an invalid string; use the more rigorous (but slower) scanner:
+                        
+                        // else, we have either a complex string or an invalid string; use the more rigorous (but slower) scanner:
                         } else {
                             toks[++top] = scanStringLit(this, index, cur, tsRes1 == TS_DQ_STRING);
                             continue;
                         }
                         
-                        // else, we got either TS_NEXT, TS_LOGICAL_OR, or TS_LOGICAL_NOT - therefore we must inspect 2 lookahead chars to determine
-                        // the next action:
+                    // else, we got either TS_NEXT, TS_LOGICAL_OR, or TS_LOGICAL_NOT - therefore we must inspect 2 lookahead chars to determine
+                    // the next action:
                     } else {
                         Integer ts1, tsIndex2, tsRes2;
                         String ch2 = stream.mid(index, 2);
@@ -612,14 +614,15 @@ public class SOQLLexer {
                                     toks[++top] = tok;
                                     continue;
                                     
-                                    // DECIMAL_NUMBER will have a special transition-state that indicates a start-state for the decimal scanner:
+                                // DECIMAL_NUMBER will have a special transition-state that indicates a start-state for the decimal scanner:
                                 } else if (tsRes2 == TS_NUMBER) {
                                     // we must have a \.[0-9] (i.e. starting-state 1) number:
                                     toks[++top] = scanDecimalNum(this, 1, index, index + 2);
                                     continue;
                                 }
-                                // else if no 2-char lookahead token-type match, then we fallback to the 1-char simple token type. note that for this lexcial
-                                // language the only possibility here is a fallback DOT token:
+
+                            // else if no 2-char lookahead token-type match, then we fallback to the 1-char simple token type. note that for this lexcial
+                            // language the only possibility here is a fallback DOT token:
                             } else {
                                 // create the new token inline, to save a call:
                                 cursor.ttype = tsRes1 & TOKEN_MASK;
@@ -759,224 +762,224 @@ public class SOQLLexer {
     // 1 => part is a backslashed char (escape is mandatory in SOQL string): single-quote, backslash, newline, carriage return
     // 2 => part is a backslashed char, with meaning determined by whether it's the target of a LIKE op: '%', '_'
     static final Integer[] StringEscapeTypeCodeTable = new Integer[]{ 0, 0, null, null, 0, 0, 0, 0, 2, 2, 1, 1, 1, 1 };
-        static final String[] StringEscapeTypePartTable = new String[]{ null, null, null, null, String.fromCharArray(new Integer[]{ 0 }), '\b', '\f', '\t', '%', '_', '\'', '\\', 'n', 'r' };
+    static final String[] StringEscapeTypePartTable = new String[]{ null, null, null, null, String.fromCharArray(new Integer[]{ 0 }), '\b', '\f', '\t', '%', '_', '\'', '\\', 'n', 'r' };
             
-            // rigorously scans string literals:
-            static Token scanStringLit(SOQLLexer lex, Integer index, Integer cur, Boolean isDQ) {
-                String[] streamArray = lex.streamArray;
-                Integer state = 0;
-                String normalModeBreakingChars = isDQ ? NormalModeBreakingCharsDQ : NormalModeBreakingCharsSQ;
-                
-                // states:
-                // 0 => normal mode; we are not currently inside an escape sequence
-                // 1 => in a unicode esc-sequence; has 0 digits; invalid until we get 4
-                // 2 => in a unicode esc-sequence; has 1 digit; invalid until we get 4
-                // 3 => in a unicode esc-sequence; has 2 digits; invalid until we get 4
-                // 4 => in a unicode esc-sequence; has 3 digits; invalid until we get 4
-                // 5 => in a hex esc-sequence; has 0 digits; invalid until we get 2
-                // 6 => in a hex esc-sequence; has 0 digits; invalid until we get 2
-                String[] parts = new String[]{}; // processed parts; to be joined on final token creation
-                    Integer[] codes = new Integer[]{};
-                        Integer lastPartEnd = index + 1; // remember to advance past the starting quote char
-                Integer hexValue;
-                String ch;
-                // if non-null, this stores the value of cur at the time the last line-continuation escape sequence was encountered (points past those line-
-                // break chars):
-                Integer lastContinuationCur;
-                Integer lineContinuationCount = 0;
-                do {
-                    if (state == 0) {
-                        if (!normalModeBreakingChars.contains(ch = streamArray[cur])) {
-                            cur++;
-                        } else if ('\\'.equals(ch)) {
-                            // check for a special escape sequence that requires additional processing:
-                            Integer escType = StringEscapeTypesLookup.indexOf(streamArray[cur + 1]);
-                            
-                            if (cur > lastPartEnd) {
-                                parts.add(lex.stream.substring(lastPartEnd, cur));
-                                codes.add(0);
-                            }
-                            if (escType > 3) {
-                                parts.add(StringEscapeTypePartTable[escType]);
-                                codes.add(StringEscapeTypeCodeTable[escType]);
-                                lastPartEnd = cur = cur + 2;
-                                // else if it's non-SOQL-escape, e.g. "\m", we will discard the backslash and keep the subsequent char:
-                            } else if (escType < 0) {
-                                cur++; // advance past the "\"
-                                if (cur == lex.streamLen) {
-                                    throw new ScanException(errorToken(lex.cursor, lex.stream.substring(index, cur), ERR_UNTERM_STRING,
-                                                                       'unterminated string constant', lex.toks[lex.top]));
-                                }
-                                // add the subsequent char as a literal part:
-                                parts.add(streamArray[cur]);
-                                codes.add(0);
-                                // advance past the plain-char and continue in normal mode:
-                                lastPartEnd = cur = cur + 1;
-                                // else if it's a line-continuation:
-                            } else if (escType > 1) {
-                                // check for a stupid M$-Windows \r\n line-break sequence:
-                                if (escType == 3 && '\n'.equals(streamArray[cur + 2])) {
-                                    cur += 3;
-                                } else {
-                                    cur += 2;
-                                }
-                                lineContinuationCount++;
-                                lastContinuationCur = lastPartEnd = cur;
-                                // unicode escape sequence:
-                            } else if (escType == 1) {
-                                state = 1;
-                                cur += 2;
-                                // hex escape sequence:
-                            } else if (escType == 0) {
-                                state = 5;
-                                cur += 2;
-                            }
-                            
-                        } else if (ch == NullChar) {
-                            if (cur == lex.streamLen) {
-                                throw new ScanException(errorToken(lex.cursor, lex.stream.substring(index, cur), ERR_UNTERM_STRING,
-                                                                   'unterminated string constant', lex.toks[lex.top]));
-                            } else {
-                                cur++;
-                                continue;
-                            }
-                            
-                            // else this must be either a line-break (illegal) or a terminating quote char (must match the start quote) or a non-terminating quote
-                            // char which needs us to add in the backslash escape (i.e. unescaped single quote inside a DQ string). the former cases will be checked
-                            // and verified after we break out of this scanning loop; the latter case can be handled here before the state=0 loop is continued:
-                        } else {
-                            if (isDQ && ch == '\'') {
-                                if (cur > lastPartEnd) {
-                                    parts.add(lex.stream.substring(lastPartEnd, cur));
-                                    codes.add(0);
-                                }
-                                parts.add('\'');
-                                codes.add(1);
-                                lastPartEnd = cur = cur + 1;
-                                continue;
-                            }
-                            break;
-                        }
-                        
-                        // else, we are in a unicode escape sequence:
-                    } else if (state < 5) {
-                        if (cur == lex.streamLen) {
-                            throw new ScanException(errorToken(lex.cursor, lex.stream.substring(index, cur), ERR_UNTERM_STRING,
-                                                               'unterminated string constant', lex.toks[lex.top]));
-                        }
-                        Integer digitVal = HexadecimalDigits.indexOfIgnoreCase(streamArray[cur]);
-                        if (digitVal > -1) {
-                            if (state == 1) {
-                                state = 2;
-                                hexValue = digitVal << 12;
-                            } else if (state == 2) {
-                                state = 3;
-                                hexValue += digitVal << 8;
-                            } else if (state == 3) {
-                                state = 4;
-                                hexValue += digitVal << 4;
-                            } else {
-                                state = 0;
-                                hexValue += digitVal;
-                                parts.add(String.fromCharArray(new Integer[] { hexValue }));
-                                codes.add(0);
-                                lastPartEnd = ++cur;
-                                continue;
-                            }
-                            cur++;
-                        } else {
-                            Integer seqStart = cur - state - 1;
-                            throw new ScanException(errorToken(
-                                strErrCursor(lex.cursor, lineContinuationCount, lastContinuationCur, seqStart),
-                                lex.stream.substring(seqStart, cur + 1), ERR_STR_UNICODE_SEQ,
-                                'invalid unicode escape sequence in string constant', lex.toks[lex.top]));
-                        }
-                        
-                        // else, we must be in a hex escape sequence:
-                    } else {
-                        if (cur == lex.streamLen) {
-                            throw new ScanException(errorToken(lex.cursor, lex.stream.substring(index, cur), ERR_UNTERM_STRING,
-                                                               'unterminated string constant', lex.toks[lex.top]));
-                        }
-                        Integer digitVal = HexadecimalDigits.indexOfIgnoreCase(streamArray[cur]);
-                        if (digitVal > -1) {
-                            if (state == 5) {
-                                state = 6;
-                                hexValue = digitVal << 4;
-                            } else {
-                                state = 0;
-                                hexValue += digitVal;
-                                parts.add(String.fromCharArray(new Integer[] { hexValue }));
-                                codes.add(0);
-                                lastPartEnd = ++cur;
-                                continue;
-                            }
-                            cur++;
-                        } else {
-                            Integer seqStart = cur - state + 3;
-                            throw new ScanException(errorToken(
-                                strErrCursor(lex.cursor, lineContinuationCount, lastContinuationCur, seqStart), 
-                                lex.stream.substring(seqStart, cur + 1), ERR_STR_HEX_SEQ,
-                                'invalid hex escape sequence in string constant', lex.toks[lex.top]));
-                        }
-                    }
-                } while (true);
-                
-                if (state > 0) {
-                    if (state < 5) {
-                        Integer seqStart = cur - state - 2;
-                        throw new ScanException(errorToken(
-                            strErrCursor(lex.cursor, lineContinuationCount, lastContinuationCur, seqStart),
-                            lex.stream.substring(seqStart, cur), ERR_STR_UNICODE_SEQ,
-                            'incomplete unicode escape sequence in string constant', lex.toks[lex.top]));
-                    } else {
-                        Integer seqStart = cur - state + 2;
-                        throw new ScanException(errorToken(
-                            strErrCursor(lex.cursor, lineContinuationCount, lastContinuationCur, seqStart), 
-                            lex.stream.substring(seqStart, cur), ERR_STR_HEX_SEQ,
-                            'incomplete hex escape sequence in string constant', lex.toks[lex.top]));
-                    }
-                }
-                
-                // verify that cur points at the correct terminating quote char:
-                if (!(isDQ ? '"' : '\'').equals(streamArray[cur])) {
-                    if (cur < lex.streamLen) {
-                        throw new ScanException(errorToken(lex.cursor, lex.stream.substring(index, cur), ERR_BROKEN_STRING,
-                                                           'illegal line-break in string constant', lex.toks[lex.top]));
-                    } else {
-                        throw new ScanException(errorToken(lex.cursor, lex.stream.substring(index, cur), ERR_UNTERM_STRING,
-                                                           'unterminated string constant', lex.toks[lex.top]));
-                    }
-                }
-                
-                // inline token construction:
-                Token cursor = lex.cursor;
-                cursor.ttype = STRING_LITERAL;
-                Token tok = cursor.clone();
-                cursor.index = cur + 1; // advance past the terminating quote char
-                
-                if (lineContinuationCount > 0) {
-                    cursor.line += lineContinuationCount;
-                    cursor.col = cur - lastContinuationCur + 1; // add 1 to get past the terminating quote char
-                } else {
-                    cursor.col += cur - index + 1; // add 1 to get past the terminating quote char
-                }
-                
-                if (parts.size() == 0) {
-                    tok.lexeme = lex.stream.substring(index, cur + 1);
-                    tok.stringLitParts.add(cur > index + 1 ? lex.stream.substring(index + 1, cur) : '');
-                    tok.stringLitCodes.add(0);
-                } else {
+    // rigorously scans string literals:
+    static Token scanStringLit(SOQLLexer lex, Integer index, Integer cur, Boolean isDQ) {
+        String[] streamArray = lex.streamArray;
+        Integer state = 0;
+        String normalModeBreakingChars = isDQ ? NormalModeBreakingCharsDQ : NormalModeBreakingCharsSQ;
+        
+        // states:
+        // 0 => normal mode; we are not currently inside an escape sequence
+        // 1 => in a unicode esc-sequence; has 0 digits; invalid until we get 4
+        // 2 => in a unicode esc-sequence; has 1 digit; invalid until we get 4
+        // 3 => in a unicode esc-sequence; has 2 digits; invalid until we get 4
+        // 4 => in a unicode esc-sequence; has 3 digits; invalid until we get 4
+        // 5 => in a hex esc-sequence; has 0 digits; invalid until we get 2
+        // 6 => in a hex esc-sequence; has 0 digits; invalid until we get 2
+        String[] parts = new String[]{}; // processed parts; to be joined on final token creation
+        Integer[] codes = new Integer[]{};
+        Integer lastPartEnd = index + 1; // remember to advance past the starting quote char
+        Integer hexValue;
+        String ch;
+        // if non-null, this stores the value of cur at the time the last line-continuation escape sequence was encountered (points past those line-
+        // break chars):
+        Integer lastContinuationCur;
+        Integer lineContinuationCount = 0;
+        do {
+            if (state == 0) {
+                if (!normalModeBreakingChars.contains(ch = streamArray[cur])) {
+                    cur++;
+                } else if ('\\'.equals(ch)) {
+                    // check for a special escape sequence that requires additional processing:
+                    Integer escType = StringEscapeTypesLookup.indexOf(streamArray[cur + 1]);
+                    
                     if (cur > lastPartEnd) {
                         parts.add(lex.stream.substring(lastPartEnd, cur));
                         codes.add(0);
                     }
-                    tok.lexeme = lex.stream.substring(index, cur + 1);
-                    tok.stringLitParts = parts;
-                    tok.stringLitCodes = codes;
+                    if (escType > 3) {
+                        parts.add(StringEscapeTypePartTable[escType]);
+                        codes.add(StringEscapeTypeCodeTable[escType]);
+                        lastPartEnd = cur = cur + 2;
+                    // else if it's non-SOQL-escape, e.g. "\m", we will discard the backslash and keep the subsequent char:
+                    } else if (escType < 0) {
+                        cur++; // advance past the "\"
+                        if (cur == lex.streamLen) {
+                            throw new ScanException(errorToken(lex.cursor, lex.stream.substring(index, cur), ERR_UNTERM_STRING,
+                                'unterminated string constant', lex.toks[lex.top]));
+                        }
+                        // add the subsequent char as a literal part:
+                        parts.add(streamArray[cur]);
+                        codes.add(0);
+                        // advance past the plain-char and continue in normal mode:
+                        lastPartEnd = cur = cur + 1;
+                    // else if it's a line-continuation:
+                    } else if (escType > 1) {
+                        // check for a stupid M$-Windows \r\n line-break sequence:
+                        if (escType == 3 && '\n'.equals(streamArray[cur + 2])) {
+                            cur += 3;
+                        } else {
+                            cur += 2;
+                        }
+                        lineContinuationCount++;
+                        lastContinuationCur = lastPartEnd = cur;
+                    // unicode escape sequence:
+                    } else if (escType == 1) {
+                        state = 1;
+                        cur += 2;
+                    // hex escape sequence:
+                    } else if (escType == 0) {
+                        state = 5;
+                        cur += 2;
+                    }
+                    
+                } else if (ch == NullChar) {
+                    if (cur == lex.streamLen) {
+                        throw new ScanException(errorToken(lex.cursor, lex.stream.substring(index, cur), ERR_UNTERM_STRING,
+                            'unterminated string constant', lex.toks[lex.top]));
+                    } else {
+                        cur++;
+                        continue;
+                    }
+                    
+                // else this must be either a line-break (illegal) or a terminating quote char (must match the start quote) or a non-terminating quote
+                // char which needs us to add in the backslash escape (i.e. unescaped single quote inside a DQ string). the former cases will be checked
+                // and verified after we break out of this scanning loop; the latter case can be handled here before the state=0 loop is continued:
+                } else {
+                    if (isDQ && ch == '\'') {
+                        if (cur > lastPartEnd) {
+                            parts.add(lex.stream.substring(lastPartEnd, cur));
+                            codes.add(0);
+                        }
+                        parts.add('\'');
+                        codes.add(1);
+                        lastPartEnd = cur = cur + 1;
+                        continue;
+                    }
+                    break;
                 }
-                return tok;
+                
+            // else, we are in a unicode escape sequence:
+            } else if (state < 5) {
+                if (cur == lex.streamLen) {
+                    throw new ScanException(errorToken(lex.cursor, lex.stream.substring(index, cur), ERR_UNTERM_STRING,
+                        'unterminated string constant', lex.toks[lex.top]));
+                }
+                Integer digitVal = HexadecimalDigits.indexOfIgnoreCase(streamArray[cur]);
+                if (digitVal > -1) {
+                    if (state == 1) {
+                        state = 2;
+                        hexValue = digitVal << 12;
+                    } else if (state == 2) {
+                        state = 3;
+                        hexValue += digitVal << 8;
+                    } else if (state == 3) {
+                        state = 4;
+                        hexValue += digitVal << 4;
+                    } else {
+                        state = 0;
+                        hexValue += digitVal;
+                        parts.add(String.fromCharArray(new Integer[] { hexValue }));
+                        codes.add(0);
+                        lastPartEnd = ++cur;
+                        continue;
+                    }
+                    cur++;
+                } else {
+                    Integer seqStart = cur - state - 1;
+                    throw new ScanException(errorToken(
+                        strErrCursor(lex.cursor, lineContinuationCount, lastContinuationCur, seqStart),
+                        lex.stream.substring(seqStart, cur + 1), ERR_STR_UNICODE_SEQ,
+                        'invalid unicode escape sequence in string constant', lex.toks[lex.top]));
+                }
+                
+            // else, we must be in a hex escape sequence:
+            } else {
+                if (cur == lex.streamLen) {
+                    throw new ScanException(errorToken(lex.cursor, lex.stream.substring(index, cur), ERR_UNTERM_STRING,
+                        'unterminated string constant', lex.toks[lex.top]));
+                }
+                Integer digitVal = HexadecimalDigits.indexOfIgnoreCase(streamArray[cur]);
+                if (digitVal > -1) {
+                    if (state == 5) {
+                        state = 6;
+                        hexValue = digitVal << 4;
+                    } else {
+                        state = 0;
+                        hexValue += digitVal;
+                        parts.add(String.fromCharArray(new Integer[] { hexValue }));
+                        codes.add(0);
+                        lastPartEnd = ++cur;
+                        continue;
+                    }
+                    cur++;
+                } else {
+                    Integer seqStart = cur - state + 3;
+                    throw new ScanException(errorToken(
+                        strErrCursor(lex.cursor, lineContinuationCount, lastContinuationCur, seqStart), 
+                        lex.stream.substring(seqStart, cur + 1), ERR_STR_HEX_SEQ,
+                        'invalid hex escape sequence in string constant', lex.toks[lex.top]));
+                }
             }
+        } while (true);
+        
+        if (state > 0) {
+            if (state < 5) {
+                Integer seqStart = cur - state - 2;
+                throw new ScanException(errorToken(
+                    strErrCursor(lex.cursor, lineContinuationCount, lastContinuationCur, seqStart),
+                    lex.stream.substring(seqStart, cur), ERR_STR_UNICODE_SEQ,
+                    'incomplete unicode escape sequence in string constant', lex.toks[lex.top]));
+            } else {
+                Integer seqStart = cur - state + 2;
+                throw new ScanException(errorToken(
+                    strErrCursor(lex.cursor, lineContinuationCount, lastContinuationCur, seqStart), 
+                    lex.stream.substring(seqStart, cur), ERR_STR_HEX_SEQ,
+                    'incomplete hex escape sequence in string constant', lex.toks[lex.top]));
+            }
+        }
+        
+        // verify that cur points at the correct terminating quote char:
+        if (!(isDQ ? '"' : '\'').equals(streamArray[cur])) {
+            if (cur < lex.streamLen) {
+                throw new ScanException(errorToken(lex.cursor, lex.stream.substring(index, cur), ERR_BROKEN_STRING,
+                                                    'illegal line-break in string constant', lex.toks[lex.top]));
+            } else {
+                throw new ScanException(errorToken(lex.cursor, lex.stream.substring(index, cur), ERR_UNTERM_STRING,
+                                                    'unterminated string constant', lex.toks[lex.top]));
+            }
+        }
+        
+        // inline token construction:
+        Token cursor = lex.cursor;
+        cursor.ttype = STRING_LITERAL;
+        Token tok = cursor.clone();
+        cursor.index = cur + 1; // advance past the terminating quote char
+        
+        if (lineContinuationCount > 0) {
+            cursor.line += lineContinuationCount;
+            cursor.col = cur - lastContinuationCur + 1; // add 1 to get past the terminating quote char
+        } else {
+            cursor.col += cur - index + 1; // add 1 to get past the terminating quote char
+        }
+        
+        if (parts.size() == 0) {
+            tok.lexeme = lex.stream.substring(index, cur + 1);
+            tok.stringLitParts.add(cur > index + 1 ? lex.stream.substring(index + 1, cur) : '');
+            tok.stringLitCodes.add(0);
+        } else {
+            if (cur > lastPartEnd) {
+                parts.add(lex.stream.substring(lastPartEnd, cur));
+                codes.add(0);
+            }
+            tok.lexeme = lex.stream.substring(index, cur + 1);
+            tok.stringLitParts = parts;
+            tok.stringLitCodes = codes;
+        }
+        return tok;
+    }
     
     static Token strErrCursor(Token startCursor, Integer lineContinuationCount, Integer lastContinuationCur, Integer cur) {
         Token inc = startCursor.clone();

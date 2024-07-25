@@ -31,6 +31,7 @@ global class SOQLContext {
             //qe.initCause(og);
             throw qe;
         }
+        //Assert.fail('Unrecognized error type: ' + og.getTypeName());
         throw og;
     }
  
@@ -148,6 +149,8 @@ global class SOQLContext {
     Boolean securityModeTransactional = false;
     Boolean enforceCrudFLS = true;
 
+    String bindTypesMode = 'loose'; // "loose", "strict"
+
     Set<Schema.sObjectType> recordAccessBypassTypes = new Set<Schema.sObjectType>{ 
         Schema.sObjectType.RecordType.getSObjectType(), // RecordType sObjectType metadata is a bit weird
         Schema.ContentVersion.sObjectType, Schema.ContentDocument.sObjectType, Schema.ContentDocumentLink.sObjectType,
@@ -155,6 +158,9 @@ global class SOQLContext {
     };
     RKShare.AccessResolver customAccess;
     RKShare.SecurityModel sharingModel;
+
+    Object[] anonVals = new Object[]{};
+    Map<String, Object> namedVals = new Map<String, Object>();
 
     @testVisible
     //RestrictedSearch[] searchRules = new RestrictedSearch[]{};
@@ -178,6 +184,42 @@ global class SOQLContext {
 
     global SOQLContext() {
         this('AdHoc');
+    }
+
+    global SOQLContext looseBindTypes() {
+        this.bindTypesMode = 'loose';
+        return this;
+    }
+
+    global SOQLContext strictBindTypes() {
+        this.bindTypesMode = 'strict';
+        return this;
+    }
+
+    global SOQLContext bind(Object bindVal) {
+        anonVals.add(bindVal);
+        return this;
+    }
+
+    global SOQLContext bind(String bindName, Object bindVal) {
+        namedVals.put(bindName, bindVal);
+        return this;
+    }
+
+    global SOQLContext bindAll(Object[] bindVals) {
+        anonVals.addAll(bindVals);
+        return this;
+    }
+
+    global SOQLContext bindAll(Map<String, Object> namedBinds) {
+        namedVals.putAll(namedBinds);
+        return this;
+    }
+
+    global SOQLContext clearBindings() {
+        this.anonVals = new Object[]{};
+        this.namedVals = new Map<String, Object>();
+        return this;
     }
 
     global SOQLContext fork(String name, String label) {
@@ -322,6 +364,13 @@ global class SOQLContext {
     }
 
     global SObject[] query(String queryString, Map<String, Object> namedBinds, Object[] anonymousBinds) {
+        if (namedBinds != null) {
+            this.namedVals.putAll(namedBinds);
+        }
+        if (anonymousBinds != null) {
+            this.anonVals.addAll(anonymousBinds);
+        }
+
         // Works like startSystemMode(), but only acts like System mode with regard to record sharing, not CRUD/FLS:
         RKSecurity.SecuritySavepoint sp = new RKSecurity.SecuritySavepoint();
         try {
@@ -334,9 +383,10 @@ global class SOQLContext {
             SOQLParser.LocalRebindPool rebindPool = RKShare.mintRebindPool();
             SOQLParser.SOQL soql = 
                 new SOQLParser.SOQL(queryString)
+                    .bindTypesMode(bindTypesMode)
                     .rebindPool(rebindPool)
-                    .vals(namedBinds)
-                    .vals(anonymousBinds)
+                    .vals(this.namedVals) //namedBinds)
+                    .vals(this.anonVals) //anonymousBinds)
                     .resolve(enforceCrudFLS);
             
             assertRules(soql)
@@ -346,8 +396,33 @@ global class SOQLContext {
             wrapAndRethrowParseErrors(e);
         } finally {
             RKSecurity.restore(sp);
+            clearBindings();
         }
         return null; // unreachable
+    }
+
+    // Returns the equivalent vanilla-SOQL query (can be run via Database.query or used to construct a QueryLocator)
+    // after asserting the security levels and rules specified by this SOQLContext - which may either throw error, or
+    // modify the resulting query:
+    global String getQuery(String queryString, Map<String, Object> namedBinds, Object[] anonymousBinds, 
+            SOQLParser.LocalRebindPool rebindPool) {
+        
+        try {
+            return getSOQL(queryString, namedBinds, anonymousBinds, rebindPool).ser();
+        } catch (SOQLParser.TypeException e) {
+            wrapAndRethrowParseErrors(e);
+        } catch (SOQLParser.SerializerException e) {
+            wrapAndRethrowParseErrors(e);
+        } catch (SOQLParser.ErrorException e) {
+            wrapAndRethrowParseErrors(e);
+        }
+        return null; // unreachable
+    }
+
+    global String getQuery(String queryString, Object[] anonymousBinds) {
+        Map<String, Object> emptyNamedBinds = new Map<String, Object>();
+        SOQLParser.LocalRebindPool nullRebinds = null;
+        return getQuery(queryString, emptyNamedBinds, anonymousBinds, nullRebinds);
     }
 
     global String getQuery(String queryString) {
@@ -374,21 +449,6 @@ global class SOQLContext {
         return getQuery(queryString, new Object[]{ val1, val2, val3, val4, val5 });
     }
 
-    global String getQuery(String queryString, Object[] anonymousBinds) {
-        Map<String, Object> emptyNamedBinds = new Map<String, Object>();
-        SOQLParser.LocalRebindPool nullRebinds = null;
-        return getQuery(queryString, emptyNamedBinds, anonymousBinds, nullRebinds);
-    }
-
-    // Returns the equivalent vanilla-SOQL query (can be run via Database.query or used to construct a QueryLocator)
-    // after asserting the security levels and rules specified by this SOQLContext - which may either throw error, or
-    // modify the resulting query:
-    global String getQuery(String queryString, Map<String, Object> namedBinds, Object[] anonymousBinds, 
-            SOQLParser.LocalRebindPool rebindPool) {
-        
-        return getSOQL(queryString, namedBinds, anonymousBinds, rebindPool).ser();
-    }
-
     // =============================================================================================================
 
     global SOQLParser.SOQL getSOQL(String queryString) {
@@ -404,7 +464,7 @@ global class SOQLContext {
     }
     
     global SOQLParser.SOQL getSOQL(String queryString, Object val1, Object val2, Object val3) {
-        return getSOQL(queryString, new Object[]{ val1, val2, val3, null, null  });
+        return getSOQL(queryString, new Object[]{ val1, val2, val3, null, null });
     }
 
     global SOQLParser.SOQL getSOQL(String queryString, Object val1, Object val2, Object val3, Object val4) {
@@ -426,6 +486,14 @@ global class SOQLContext {
     // modify the resulting query:
     global SOQLParser.SOQL getSOQL(String queryString, Map<String, Object> namedBinds, Object[] anonymousBinds, 
             SOQLParser.LocalRebindPool rebindPool) {
+        
+        if (namedBinds != null) {
+            this.namedVals.putAll(namedBinds);
+        }
+        if (anonymousBinds != null) {
+            this.anonVals.addAll(anonymousBinds);
+        }
+
         // Works like startSystemMode(), but only acts like System mode with regard to record sharing, not CRUD/FLS:
         RKSecurity.SecuritySavepoint sp = new RKSecurity.SecuritySavepoint();
         try {
@@ -437,12 +505,15 @@ global class SOQLContext {
             // Uses a LocalReBindPool, e.g. Id[] ids0, ids1, ids2:
             //SOQLParser.LocalRebindPool rebindPool = RKShare.mintRebindPool();
             SOQLParser.SOQL soql = 
-                new SOQLParser.SOQL(queryString);
+                new SOQLParser.SOQL(queryString)
+                    .bindTypesMode(bindTypesMode);
+            
             if (rebindPool != null) {
                 soql.rebindPool(rebindPool);
             }
-            soql.vals(namedBinds)
-                .vals(anonymousBinds)
+            soql.vals(this.namedVals) //namedBinds)
+                .vals(this.anonVals) //anonymousBinds)
+                //.bind()
                 .resolve(enforceCrudFLS);
             
             assertRules(soql)
@@ -458,6 +529,7 @@ global class SOQLContext {
             wrapAndRethrowParseErrors(e);
         } finally {
             RKSecurity.restore(sp);
+            clearBindings();
         }
         return null; // unreachable
     }
@@ -474,15 +546,16 @@ global class SOQLContext {
                 RKSecurity.transactionalThrow();
             }
             
-            SOQLParser.SOQL soql = 
-                new SOQLParser.SOQL(queryString)
-                    .resolve(enforceCrudFLS);
+            SOQLParser.SOQL soql = new SOQLParser.SOQL(queryString)
+                .bindTypesMode(bindTypesMode)
+                .resolve(enforceCrudFLS);
 
             return assertRules(soql);
         } catch (Exception e) {
             wrapAndRethrowParseErrors(e);
         } finally {
             RKSecurity.restore(sp);
+            clearBindings();
         }
         return null; // unreachable
     }

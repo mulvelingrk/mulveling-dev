@@ -282,6 +282,7 @@ public with sharing class RKSecurity {
 
     private static final List<Integer[]> BindStrategyStack = new List<Integer[]>{ new Integer[]{ BIND_PKG_STATIC, BIND_DYNAMIC } };
 
+    @TestVisible
     private static Integer[] resolvePrimitiveBindTypes(Integer bindType) {
         if (bindType == BIND_PGK_STATIC_THEN_DYNAMIC) {
             return new Integer[]{ BIND_PKG_STATIC, BIND_DYNAMIC };
@@ -1999,6 +2000,7 @@ public with sharing class RKSecurity {
     }
 
     // TODO: this seems redundant to getSystemAccessPaths()...
+    @TestVisible
     static Set<String> getAllPaths(PathPart[] headParts) {
         SystemAccessCompiler compiler = new SystemAccessCompiler();
         compiler.exec(headParts);

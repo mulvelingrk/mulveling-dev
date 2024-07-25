@@ -215,12 +215,14 @@ global class SOQLParser {
     }
 
     global class SOQL {
-        SOQLParser parser;
+        @TestVisible
+        public SOQLParser parser;
         SOQLLexer lex;
 
         // staging variables:
         Bindings bindings;
         LocalReBindPool reBindPool;
+        String bindTypesMode = null; // "loose", "strict"
 
         // parsed variables:
         public SelectElmt[] selects = new SelectElmt[]{};
@@ -257,6 +259,11 @@ global class SOQLParser {
             parser.refProc = new ReferenceProcessor(parent.parser.refProc);
         }
 
+        global SOQL bindTypesMode(String mode) {
+            this.bindTypesMode = mode;
+            return this;
+        }
+
         global CondExpr getWhereCondition() {
             return whereCond;
         }
@@ -270,13 +277,15 @@ global class SOQLParser {
             return resTable;
         }
 
-        global SOQL reBindPool(String name) {
-            this.reBindPool = new LocalReBindPool(name);
+        global SOQL reBindPool(LocalReBindPool reBindPool) {
+            this.reBindPool = reBindPool;
             return this;
         }
 
-        global SOQL reBindPool(LocalReBindPool reBindPool) {
-            this.reBindPool = reBindPool;
+/* mulveling-dev
+
+        global SOQL reBindPool(String name) {
+            this.reBindPool = new LocalReBindPool(name);
             return this;
         }
 
@@ -347,6 +356,7 @@ global class SOQLParser {
             bindings.indexed.addAll(new Object[]{ a1, a2, a3, a4, a5, a6 });
             return this;
         }
+        */
 
         global SOQL vals(Map<String, Object> named) {
             if (named != null) {
@@ -363,6 +373,7 @@ global class SOQLParser {
             return this;
         }
 
+/* mulveling-dev
         global Integer systemCount() {
             resolve(false);
             bind();
@@ -423,6 +434,7 @@ global class SOQLParser {
             bind();
             return sharingModel.getQueryLocator(ser(false), this.reBindPool);
         }
+        */
 
         public SOQL resolve(Boolean safeModeDefault) {
             // This is a parent (root) query if this.parent is null:
@@ -516,6 +528,14 @@ global class SOQLParser {
             Object[] anonBindsCopy = parent.bindings.anons.clone();
             Integer anonCursor = 0;
             for (SOQL soql : bindSOQLs) {
+                switch on (bindTypesMode) {
+                    when 'loose' {
+                        soql.parser.paramBindLoose();
+                    }
+                    when 'strict' {
+                        soql.parser.paramBindStrict();
+                    }
+                }
                 ReferenceProcessor refProc = soql.parser.refProc;
                 CondExpr cond = soql.whereCond;
                 //Bindings bindings = soql.bindings;
@@ -525,6 +545,7 @@ global class SOQLParser {
                     // This 1st traversal is just to clear out (clobber) bindings from prior runs:
                     cond.traverse(new ValueResolver(new Map<String, Object>())
                         .refProc(refProc)
+                        .normalizeNamedParams()
                         .clobberPriorAndAnons(true));
 
                     ValueResolver valRez;
@@ -1227,6 +1248,7 @@ if (refProc == null) {
         return refProc;
     }
     
+/* mulveling-dev
     // TODO: deprecate
     global SOQLParser strictTypes(Schema.sObjectType baseRefType) {
         return strictRefs(baseRefType);
@@ -1320,7 +1342,8 @@ if (refProc == null) {
         }
         return cond;
     }
-    
+    */
+
     // Base type for all expression elements -- this is the only common ancestor between ExprPart and Value:
     global virtual class Elmt {
         public transient String ser; // for use only be Serializer
@@ -1406,6 +1429,7 @@ if (refProc == null) {
             return this;
         }
         
+/* mulveling-dev
         // Note that this method may return a different CondExpr instance than 'this'
         // Throws ParseException if rhsString is not valid syntax
         global CondExpr andx(String rhsString) {
@@ -1653,6 +1677,7 @@ if (refProc == null) {
             lastUnboundAnonParams = valRez.unboundAnonParams;
             return this;
         }
+        */
         
         global String ser() {
             SOQLParser percival = getParser();
@@ -1980,6 +2005,7 @@ if (refProc == null) {
         
         // TODO: cache eval results
         // note that isLikeOpTarget is not used in the list impl, since a list cannot be the target of a LIKE op:
+        /*
         public override Object eval(Boolean isLikeOpTarget, Object heent) {
             if (evald == true) {
                 return eval;
@@ -1991,6 +2017,7 @@ if (refProc == null) {
             this.evald = true;
             return this.eval = arr;
         }
+        */
     }
     
     global class ValueElmt extends Value {
@@ -2144,65 +2171,66 @@ if (refProc == null) {
                 // like-op target, so build a regexp string:
                 if (isLikeOpTarget == true) {
                     String[] regexpParts = new String[]{};
-                        for (Integer i=0; i < stringLitParts.size(); i++) {
-                            String part = stringLitParts[i];
-                            Integer code = stringLitCodes[i];
-                            if (code == 0 && part.length() > 0) {
-                                String[] partChars = part.split('');
-                                for (String ch : partChars) {
-                                    if (ch.isAlphanumeric()) {
-                                        regexpParts.add(ch);
-                                    } else if (ch == '\\') {
-                                        regexpParts.add('\\\\');
-                                    } else if (ch == '%') {
-                                        regexpParts.add('(?:.|[\\r\\n])*');
-                                    } else if (ch == '_') {
-                                        regexpParts.add('(?:.|[\\r\\n])');
-                                    } else if (ch == '\n') {
-                                        regexpParts.add('\\n');
-                                    } else if (ch == '\r') {
-                                        regexpParts.add('\\r');
-                                    } else {
-                                        regexpParts.add('\\' + ch);
-                                    }
+                    for (Integer i=0; i < stringLitParts.size(); i++) {
+                        String part = stringLitParts[i];
+                        Integer code = stringLitCodes[i];
+                        if (code == 0 && part.length() > 0) {
+                            String[] partChars = part.split('');
+                            for (String ch : partChars) {
+                                if (ch.isAlphanumeric()) {
+                                    regexpParts.add(ch);
+                                } else if (ch == '\\') {
+                                    regexpParts.add('\\\\');
+                                } else if (ch == '%') {
+                                    regexpParts.add('(?:.|[\\r\\n])*');
+                                } else if (ch == '_') {
+                                    regexpParts.add('(?:.|[\\r\\n])');
+                                } else if (ch == '\n') {
+                                    regexpParts.add('\\n');
+                                } else if (ch == '\r') {
+                                    regexpParts.add('\\r');
+                                } else {
+                                    regexpParts.add('\\' + ch);
                                 }
-                                // we backslash-escape all code==1 and code==2 parts (note that \r and \n become literal "\r" and
-                                // "\n" 2-char sequences, which is desired in this case):
-                            } else {
-                                regexpParts.add('\\' + part);
                             }
+                            // we backslash-escape all code==1 and code==2 parts (note that \r and \n become literal "\r" and
+                            // "\n" 2-char sequences, which is desired in this case):
+                        } else {
+                            regexpParts.add('\\' + part);
                         }
+                    }
                     return this.resolvedStringValue = String.join(regexpParts, '');
                     // not a like-op target, so build a literal string:
                 } else {
                     String[] resParts = new String[]{};
-                        for (Integer i=0; i < stringLitParts.size(); i++) {
-                            Integer code = stringLitCodes[i];
-                            if (code == 0) {
-                                resParts.add(stringLitParts[i]);
-                            } else if (code == 1) {
-                                String ch = stringLitParts[i];
-                                if (ch.containsAny('nr')) {
-                                    if (ch == 'n') {
-                                        resParts.add('\n');
-                                    } else {
-                                        resParts.add('\r');
-                                    }
+                    for (Integer i=0; i < stringLitParts.size(); i++) {
+                        Integer code = stringLitCodes[i];
+                        if (code == 0) {
+                            resParts.add(stringLitParts[i]);
+                        } else if (code == 1) {
+                            String ch = stringLitParts[i];
+                            if (ch.containsAny('nr')) {
+                                if (ch == 'n') {
+                                    resParts.add('\n');
                                 } else {
-                                    resParts.add(ch);
+                                    resParts.add('\r');
                                 }
-                                // else code == 2 means we have a \% or \_ sequence that must be reduced to % and _ because this is not 
-                                // a LIKE op target:
                             } else {
-                                resParts.add(stringLitParts[i]);
+                                resParts.add(ch);
                             }
+                            // else code == 2 means we have a \% or \_ sequence that must be reduced to % and _ because this is not 
+                            // a LIKE op target:
+                        } else {
+                            resParts.add(stringLitParts[i]);
                         }
+                    }
                     return this.resolvedStringValue = String.join(resParts, '');
                 }
             }
             return null;
         }
         
+/* mulveling-dev
         // "hint" is a freaking reserved word in Apex, so "heent":
         public override Object eval(Boolean isLikeOpTarget, Object heent) {
             if (evald == true) {
@@ -2245,24 +2273,24 @@ if (refProc == null) {
                     Integer[] codes;
                     if (ttype == SOQLLexer.KW_TODAY) {
                         codes = new Integer[]{ 0, null, 0, UNIT_DAY };
-                            } else if (ttype == SOQLLexer.KW_TOMORROW) {
-                                codes = new Integer[]{ 1, UNIT_DAY, 0, UNIT_DAY };
-                                    } else if (ttype == SOQLLexer.KW_YESTERDAY) {
-                                        codes = new Integer[]{ -1, UNIT_DAY, 0, UNIT_DAY };
-                                            } else if (ttype == SOQLLexer.KW_NEXT_90_DAYS) {
-                                                codes = new Integer[]{ 0, null, 90, UNIT_DAY };
-                                                    } else if (ttype == SOQLLexer.KW_NEXT_N_DAYS) {
-                                                        codes = new Integer[]{ 0, null, dateFormula_N, UNIT_DAY };
-                                                            } else if (ttype == SOQLLexer.KW_LAST_90_DAYS) {
-                                                                codes = new Integer[]{ 0, null, -90, UNIT_DAY };
-                                                                    } else if (ttype == SOQLLexer.KW_LAST_N_DAYS) {
-                                                                        codes = new Integer[]{ 0, null, -dateFormula_N, UNIT_DAY };
-                                                                            
-                                                                            // TODO:
-                                                                            } else {
-                                                                                evalErr(loc, (datetimeTarget ? 'DateTime' : 'Date') + ' formula ' + dateFormula.lexeme + 
-                                                                                        ' not yet supported for dynamic evaluation');
-                                                                            }
+                    } else if (ttype == SOQLLexer.KW_TOMORROW) {
+                        codes = new Integer[]{ 1, UNIT_DAY, 0, UNIT_DAY };
+                    } else if (ttype == SOQLLexer.KW_YESTERDAY) {
+                        codes = new Integer[]{ -1, UNIT_DAY, 0, UNIT_DAY };
+                    } else if (ttype == SOQLLexer.KW_NEXT_90_DAYS) {
+                        codes = new Integer[]{ 0, null, 90, UNIT_DAY };
+                    } else if (ttype == SOQLLexer.KW_NEXT_N_DAYS) {
+                        codes = new Integer[]{ 0, null, dateFormula_N, UNIT_DAY };
+                    } else if (ttype == SOQLLexer.KW_LAST_90_DAYS) {
+                        codes = new Integer[]{ 0, null, -90, UNIT_DAY };
+                    } else if (ttype == SOQLLexer.KW_LAST_N_DAYS) {
+                        codes = new Integer[]{ 0, null, -dateFormula_N, UNIT_DAY };
+                            
+                    // TODO:
+                    } else {
+                        evalErr(loc, (datetimeTarget ? 'DateTime' : 'Date') + ' formula ' + dateFormula.lexeme + 
+                                ' not yet supported for dynamic evaluation');
+                    }
                     
                     Integer startOffset = codes[0];
                     Integer startUnits = codes[1];
@@ -2275,40 +2303,40 @@ if (refProc == null) {
                                 start = start.addDays(startOffset);
                                 // TODO:
                             } else { System.assert(false, 'Date Range units other than Day have not yet been implemented'); }
-                            /*else if (startUnits == UNIT_WEEK) { // weeks
-start = start.addDays(startOffset * 7);
-} else if (startUnits == UNIT_MONTH) { // months
-start = start.addMonths(startOffset);
-} else if (startUnits == UNIT_QUARTER) {
-// TODO: quarters
-} else if (startUnits == UNIT_FISCAL_QTR) {
-// TODO: fiscal_quarters
-} else if (startUnits == UNIT_YEAR) { // years
-start = start.addYears(startOffset);
-}*/
+                            //else if (startUnits == UNIT_WEEK) { // weeks
+                            //start = start.addDays(startOffset * 7);
+                            //} else if (startUnits == UNIT_MONTH) { // months
+                            //start = start.addMonths(startOffset);
+                            //} else if (startUnits == UNIT_QUARTER) {
+                            //// TODO: quarters
+                            //} else if (startUnits == UNIT_FISCAL_QTR) {
+                            //// TODO: fiscal_quarters
+                            //} else if (startUnits == UNIT_YEAR) { // years
+                            //start = start.addYears(startOffset);
+                            //}
                         }
                         
                         if (rangeUnits == UNIT_DAY) {
                             val = dayRangeDt(start, rangeOffset);
                             // TODO:
                         } else { System.assert(false, 'Date Range units other than Day have not yet been implemented'); }
-                        /*
-else if (rangeUnits == UNIT_WEEK) {
-// TODO:
-val = weekRangeDt(start, rangeOffset);
-} else if (rangeUnits == UNIT_MONTH) {
-// TODO:
-val = monthRangeDt(start, rangeOffset);
-} else if (rangeUnits == UNIT_QUARTER) {
-// TODO:
-//val = quarterRangeDt(start, rangeOffset);
-} else if (rangeUnits == UNIT_FISCAL_QTR) {
-// TODO:
-//val = fiscalQuarterRangeDt(start, rangeOffset);
-} else if (rangeUnits == UNIT_YEAR) {
-// TODO:
-val = yearRangeDt(start, rangeOffset);
-}*/
+                        
+                        //else if (rangeUnits == UNIT_WEEK) {
+                        //// TODO:
+                        //val = weekRangeDt(start, rangeOffset);
+                        //} else if (rangeUnits == UNIT_MONTH) {
+                        //// TODO:
+                        //val = monthRangeDt(start, rangeOffset);
+                        //} else if (rangeUnits == UNIT_QUARTER) {
+                        //// TODO:
+                        ////val = quarterRangeDt(start, rangeOffset);
+                        //} else if (rangeUnits == UNIT_FISCAL_QTR) {
+                        //// TODO:
+                        ////val = fiscalQuarterRangeDt(start, rangeOffset);
+                        //} else if (rangeUnits == UNIT_YEAR) {
+                        //// TODO:
+                        //val = yearRangeDt(start, rangeOffset);
+                        //}
                     } else {
                         Date start = System.today();
                         if (startOffset != 0) {
@@ -2316,41 +2344,39 @@ val = yearRangeDt(start, rangeOffset);
                                 start = start.addDays(startOffset);
                                 // TODO:
                             } else { System.assert(false, 'Date Range units other than Day have not yet been implemented'); }
-                            /*else if (startUnits == UNIT_WEEK) { // weeks
-start = start.addDays(startOffset * 7);
-} else if (startUnits == UNIT_MONTH) { // months
-start = start.addMonths(startOffset);
-} else if (startUnits == UNIT_QUARTER) {
-// TODO: quarters
-} else if (startUnits == UNIT_FISCAL_QTR) {
-// TODO: fiscal_quarters
-} else if (startUnits == UNIT_YEAR) { // years
-start = start.addYears(startOffset);
-}
-*/
+                            //else if (startUnits == UNIT_WEEK) { // weeks
+                            //start = start.addDays(startOffset * 7);
+                            //} else if (startUnits == UNIT_MONTH) { // months
+                            //start = start.addMonths(startOffset);
+                            //} else if (startUnits == UNIT_QUARTER) {
+                            //// TODO: quarters
+                            //} else if (startUnits == UNIT_FISCAL_QTR) {
+                            //// TODO: fiscal_quarters
+                            //} else if (startUnits == UNIT_YEAR) { // years
+                            //start = start.addYears(startOffset);
+                            //}
                         }
                         
                         if (rangeUnits == UNIT_DAY) {
                             val = dayRange(start, rangeOffset);
                             // TODO:
                         } else { System.assert(false, 'Date Range units other than Day have not yet been implemented'); }
-                        /*else if (rangeUnits == UNIT_WEEK) {
-// TODO:
-//val = weekRange(start, rangeOffset);
-} else if (rangeUnits == UNIT_MONTH) {
-// TODO:
-//val = monthRange(start, rangeOffset);
-} else if (rangeUnits == UNIT_QUARTER) {
-// TODO:
-//val = quarterRange(start, rangeOffset);
-} else if (rangeUnits == UNIT_FISCAL_QTR) {
-// TODO:
-//val = fiscalQuarterRange(start, rangeOffset);
-} else if (rangeUnits == UNIT_YEAR) {
-// TODO:
-//val = yearRange(start, rangeOffset);
-}
-*/
+                        ///else if (rangeUnits == UNIT_WEEK) {
+                        //// TODO:
+                        ////val = weekRange(start, rangeOffset);
+                        //} else if (rangeUnits == UNIT_MONTH) {
+                        //// TODO:
+                        ////val = monthRange(start, rangeOffset);
+                        //} else if (rangeUnits == UNIT_QUARTER) {
+                        //// TODO:
+                        ////val = quarterRange(start, rangeOffset);
+                        //} else if (rangeUnits == UNIT_FISCAL_QTR) {
+                        //// TODO:
+                        ////val = fiscalQuarterRange(start, rangeOffset);
+                        //} else if (rangeUnits == UNIT_YEAR) {
+                        //// TODO:
+                        ////val = yearRange(start, rangeOffset);
+                        //}
                     }
                 }
                 
@@ -2362,7 +2388,7 @@ start = start.addYears(startOffset);
             
             this.evald = true;
             return this.eval = val;
-        }
+        }*/
     }
     
     static final Integer UNIT_DAY = 0;
@@ -2375,19 +2401,20 @@ start = start.addYears(startOffset);
     public static final Time Time00 = Time.newInstance(0, 0, 0, 0);
     public static final Time Time24 = Time.newInstance(23, 59, 59, 999);
     
+/* mulveling-dev
     static DateTime[] dayRangeDt(DateTime anchorDate, Integer rangeOffsetUnits) {
         Date start = anchorDate.date();
         if (rangeOffsetUnits >= 0) {
             return new DateTime[] {
                 DateTime.newInstance(start, Time00),
-                    DateTime.newInstance(start.addDays(rangeOffsetUnits - 1), Time24)
-                    };
-                        } else {
-                            return new DateTime[] {
-                                DateTime.newInstance(start.addDays(rangeOffsetUnits), Time00),
-                                    DateTime.newInstance(start, Time00)
-                                    };
-                                        }
+                DateTime.newInstance(start.addDays(rangeOffsetUnits - 1), Time24)
+            };
+        } else {
+            return new DateTime[] {
+                DateTime.newInstance(start.addDays(rangeOffsetUnits), Time00),
+                DateTime.newInstance(start, Time00)
+            };
+        }
     }
     
     static Date[] dayRange(Date anchorDate, Integer rangeOffsetUnits) {
@@ -2395,19 +2422,18 @@ start = start.addYears(startOffset);
         if (rangeOffsetUnits >= 0) {
             return new Date[] {
                 anchorDate,
-                    //anchorDate.addDays(rangeOffsetUnits - 1)
-                    anchorDate.addDays(rangeOffsetUnits)
-                    };
-                        } else {
-                            return new Date[] {
-                                anchorDate.addDays(rangeOffsetUnits),
-                                    //anchorDate.addDays(-1)
-                                    anchorDate.addDays(0)
-                                    };
-                                        }
+                //anchorDate.addDays(rangeOffsetUnits - 1)
+                anchorDate.addDays(rangeOffsetUnits)
+            };
+        } else {
+            return new Date[] {
+                anchorDate.addDays(rangeOffsetUnits),
+                //anchorDate.addDays(-1)
+                anchorDate.addDays(0)
+            };
+        }
     }
     
-    /*
     static DateTime[] weekRangeDt(DateTime anchorDate, Integer rangeOffsetUnits) {
         Date start = anchorDate.date().toStartOfWeek();
         if (rangeOffsetUnits >= 0) {
@@ -2462,7 +2488,7 @@ start = start.addYears(startOffset);
         // rhs values cache their resolved values, because they can never change, and resolving them can be CPU-intensive:
         public Object eval;
         // "hint" is a freaking reserved word in apex, hence "heent":
-        public virtual Object eval(Boolean isLikeOpTarget, Object heent) { System.assert(false, 'Value.eval not implemented'); return null; }
+        //public virtual Object eval(Boolean isLikeOpTarget, Object heent) { System.assert(false, 'Value.eval not implemented'); return null; }
         public transient String[] serParts; // for use only by Serializer
         
         public virtual void traverse(AbstractVisitor v) {}
@@ -3310,6 +3336,7 @@ start = start.addYears(startOffset);
 
     // =============================================================================================================================
     
+/* mulveling-dev
     public class EvalDebug extends Visitor {
         Boolean rawRefs = false;
         
@@ -3348,6 +3375,7 @@ start = start.addYears(startOffset);
             return expr.nested != null;
         }
     }
+    */
     
     static final Object UNDEFINED_VAL = new UndefinedVal();
     class UndefinedVal {}
@@ -3469,7 +3497,7 @@ start = start.addYears(startOffset);
                     rawBindVal = namedParamsLC.get(elmt.paramName.lexeme.toLowerCase());
                 } else if (elmt.paramIndex != null && indexedParams != null && elmt.paramIndexIntVal < indexedParams.size()) {
                     rawBindVal = indexedParams[elmt.paramIndexIntVal];
-                    // once an anonymous param is bound to a value, that value will stick forever:
+                // once an anonymous param is bound to a value, that value will stick forever:
                 } else if (elmt.paramAnon != null && elmt.paramResolvedValue == null && indexedParams != null && anonCounter < indexedParams.size()) {
                     rawBindVal = indexedParams[anonParamIndex = anonCounter++];
                 }
@@ -3501,31 +3529,31 @@ start = start.addYears(startOffset);
                         rawBindVal instanceof DateTime || rawBindVal instanceof sObject) {
                     startValueList = false;
                     vals = new Object[]{ rawBindVal };
-                        } else if (rawBindVal instanceof Set<Id>) {
-                            vals = new List<Id>((Set<Id>) rawBindVal);
-                        } else if (rawBindVal instanceof Set<String>) {
-                            vals = new List<String>((Set<String>) rawBindVal);
-                        } else if (rawBindVal instanceof Set<Decimal>) {
-                            vals = new List<Decimal>((Set<Decimal>) rawBindVal);
-                        } else if (rawBindVal instanceof Set<Integer>) {
-                            vals = new List<Integer>((Set<Integer>) rawBindVal);
-                        } else if (rawBindVal instanceof Set<Date>) {
-                            vals = new List<Date>((Set<Date>) rawBindVal);
-                        } else if (rawBindVal instanceof Set<Double>) {
-                            vals = new List<Double>((Set<Double>) rawBindVal);
-                        } else if (rawBindVal instanceof Set<Long>) {
-                            vals = new List<Long>((Set<Long>) rawBindVal);
-                        } else if (rawBindVal instanceof Set<DateTime>) {
-                            vals = new List<DateTime>((Set<DateTime>) rawBindVal);
-                        } else if (rawBindVal instanceof Set<Boolean>) {
-                            vals = new List<Boolean>((Set<Boolean>) rawBindVal);
-                        } else if (rawBindVal instanceof List<sObject>) {
-                            vals = new List<sObject>((Set<sObject>) rawBindVal);
-                        } else {
-                            // TODO: consider making this branch an error:
-                            startValueList = false;
-                            vals = new Object[]{ rawBindVal };
-                                }
+                } else if (rawBindVal instanceof Set<Id>) {
+                    vals = new List<Id>((Set<Id>) rawBindVal);
+                } else if (rawBindVal instanceof Set<String>) {
+                    vals = new List<String>((Set<String>) rawBindVal);
+                } else if (rawBindVal instanceof Set<Decimal>) {
+                    vals = new List<Decimal>((Set<Decimal>) rawBindVal);
+                } else if (rawBindVal instanceof Set<Integer>) {
+                    vals = new List<Integer>((Set<Integer>) rawBindVal);
+                } else if (rawBindVal instanceof Set<Date>) {
+                    vals = new List<Date>((Set<Date>) rawBindVal);
+                } else if (rawBindVal instanceof Set<Double>) {
+                    vals = new List<Double>((Set<Double>) rawBindVal);
+                } else if (rawBindVal instanceof Set<Long>) {
+                    vals = new List<Long>((Set<Long>) rawBindVal);
+                } else if (rawBindVal instanceof Set<DateTime>) {
+                    vals = new List<DateTime>((Set<DateTime>) rawBindVal);
+                } else if (rawBindVal instanceof Set<Boolean>) {
+                    vals = new List<Boolean>((Set<Boolean>) rawBindVal);
+                } else if (rawBindVal instanceof List<sObject>) {
+                    vals = new List<sObject>((Set<sObject>) rawBindVal);
+                } else {
+                    // TODO: consider making this branch an error:
+                    startValueList = false;
+                    vals = new Object[]{ rawBindVal };
+                }
                 
                 if (startValueList) {
                     elmt.paramResolvedValue = resolvedValueList = new ValueList();
@@ -3638,7 +3666,7 @@ start = start.addYears(startOffset);
             'dec' => 12
             };
                 
-                static final Double NaN = Double.valueOf('NaN');
+    static final Double NaN = Double.valueOf('NaN');
     static final Double Infinity = Double.valueOf('Infinity');
     static final Double NegInfinity = Double.valueOf('-Infinity');
     
@@ -3761,13 +3789,17 @@ start = start.addYears(startOffset);
             } else if (val instanceof String) {
                 return String.valueOf(val);
             } else if (val instanceof Double) {
-                if (val == NaN || val == Infinity || val == NegInfinity) {
-                    return '' + val;
-                } else {
-                    // print out decimals in full precision without scientific notation:
-                    Decimal decVal = (Decimal) val;
-                    return decVal.toPlainString();
+                Decimal decVal;
+                try {
+                    // !! If val is a special Double value (Infinity, NegInfinity, or NaN) it can throw a 
+                    // math error on Decimal conversion:
+                    decVal = (Decimal) val;
+                } catch (MathException me) {
+                    typeErr(elmt.loc, 'Invalid number value for ' + printParam(elmt, anonParamIndex) + 
+                        '; cannot convert [' + val + '] to decimal');
                 }
+                // print out decimals in full precision without scientific notation:
+                return decVal.toPlainString();
             } else if (val instanceof Boolean) {
                 return val == true ? 'true' : 'false';
             } else if (val instanceof Date) {
@@ -5152,8 +5184,8 @@ start = start.addYears(startOffset);
                 if (!aHours.isNumeric()) {
                     parseErr(peekTok, 'DateTime expression\'s hours component is not a valid integer');
                 }
-                // else we received the 'T' NAME token separately from the 'hh' (presumed to be a DECIMAL_NUMBER) component of time:
-                // TODO: this branch should not be reachable given the current lexer impl; we'll always get a combined NAME token...
+            // else we received the 'T' NAME token separately from the 'hh' (presumed to be a DECIMAL_NUMBER) component of time:
+            // TODO: this branch should not be reachable given the current lexer impl; we'll always get a combined NAME token...
             } else {
                 // advance past the 'T'
                 lex.next++;

@@ -275,4 +275,79 @@ private class SOQLContextTest {
     // Rule Violation on [Patient Lookup][Match Any Of 2][Last Violation]
     //   [Match LastName, Birth, SSN4]: Expected at least 3 qualifying
     //   match terms; got 2
+
+    @IsTest
+    private static void testCoverage1() {
+        String query = 'SELECT Id FROM Contact LIMIT 1';
+        String val = null;
+        String[] valArr = new String[]{ val, val, val, val };
+        SOQLContext.systemQuery(query);
+        SOQLContext.systemQuery(query, val);
+        SOQLContext.systemQuery(query, val, val);
+        SOQLContext.systemQuery(query, val, val, val);
+        SOQLContext.systemQuery(query, valArr);
+
+        SOQLContext.safeQuery(query);
+        SOQLContext.safeQuery(query, valArr);
+
+        SOQLContext.systemQuery(query);
+        SOQLContext.systemQuery(query, valArr);
+
+        SOQLContext.newSafeMode();
+        SOQLContext.newStrictMode();
+        SOQLContext.newSystemMode();
+
+        SOQLContext.standardSafeMode();
+        SOQLContext.standardStrictMode();
+        SOQLContext.standardSystemMode();
+
+        new SOQLContext('foo').fork('foo fork', 'Fork of foo');
+        SOQLContext ctxt = new SOQLContext();
+        ctxt.setName('Bar', 'Bar');
+        ctxt.isSealed();
+        ctxt.strictCrudFls().filterCrudFls().throwCrudFilterFls().bypassCrudFls().strictSharing();
+        User usr = createUser();
+        ctxt.customSharing(new RKShare.DesignatedUserAccessResolver(new Set<Schema.sObjectType>(), usr));
+        ctxt.delegatedSharing(usr);
+
+        ctxt = SOQLContext.newSystemMode();
+        ctxt.query(query);
+        ctxt.query(query, new Map<String, Object>());
+        ctxt.query(query, valArr);
+        ctxt.query(query, new Map<String, Object>(), valArr);
+
+        ctxt.getQuery(query);
+        ctxt.getQuery(query);
+        ctxt.getQuery(query, valArr);
+        ctxt.getQuery(query, val);
+        ctxt.getQuery(query, val, val);
+        ctxt.getQuery(query, val, val, val);
+        ctxt.getQuery(query, val, val, val, val);
+        ctxt.getQuery(query, val, val, val, val, val);
+        ctxt.getQuery(query, new Map<String, Object>(), valArr);
+
+        ctxt.getSOQL(query, val);
+        ctxt.getSOQL(query, val, val);
+        ctxt.getSOQL(query, val, val, val);
+        ctxt.getSOQL(query, val, val, val, val);
+        ctxt.getSOQL(query, val, val, val, val, val);
+
+        ctxt.validate(query);
+    }
+
+    private static User createUser() {
+        User u = new User(
+            ProfileId = [ SELECT Id FROM Profile WHERE Name = 'Standard User' ].Id,
+            LastName = 'last',
+            Email = 'captain.tylor@irresponsible.com',
+            UserName = 'captain.tylor.' + DateTime.now().getTime() + '@irresponsible.com',
+            Alias = 'alias',
+            TimeZoneSidKey = 'America/Los_Angeles',
+            EmailEncodingKey = 'UTF-8',
+            LanguageLocaleKey = 'en_US',
+            LocaleSidKey = 'en_US'
+        );
+        insert u;
+        return u;
+    }
 }
