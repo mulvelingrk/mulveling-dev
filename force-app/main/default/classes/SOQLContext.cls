@@ -564,7 +564,19 @@ global class SOQLContext {
     private SOQLParser.SOQL assertRules(SOQLParser.SOQL soql) {
         if (rootRule != null) {
             rootRule.init();
+            try {
             rootRule.assert(soql);
+            } catch (RuleViolationException err) {
+                String ogMessage =  err.getMessage();
+                // If the root rule has configured a custom error message, then use that. We will still log the original 
+                // rule violation message:
+                if (String.isNotBlank(rootRule.customMessage)) {
+                    err.originalMessage = ogMessage;
+                    err.setMessage(rootRule.customMessage);
+                }
+                System.debug(LoggingLevel.ERROR, ogMessage);
+                throw err;
+            }
         }
         return soql;
     }
@@ -656,17 +668,19 @@ global class SOQLContext {
             if (soql.whereCond == null) {
                 throwViolation('WHERE clause is required');
             }
+            /* TODO: Review...
             if (soql.sorts != null && soql.sorts.size() > 0) {
                 throwViolation('ORDER BY clause is not allowed');
             }
+            */
             if (soql.nested != null && soql.nested.size() > 0) {
                 throwViolation('SELECT of child relationships is not allowed');
             }
             if (matchElmtsByPathLC.keySet().size() == 0) {
                 throwViolation('At least 1 match must be defined');
             }
-            if (minimumMatches == null || minimumMatches < 1) {
-                throwViolation('Minimum # of matches must be set to a positive integer; got ' + minimumMatches);
+            if (minimumMatches != null && minimumMatches < 0) {
+                throwViolation('Minimum # of matches must be set to a non-negative integer; got ' + minimumMatches);
             }
         }
     
@@ -674,7 +688,7 @@ global class SOQLContext {
             // Verify we got all match elements that were flagged as required:
             for (ExactMatchElmt matchElmt : matchElmtsByPathLC.values()) {
                 if (matchElmt.isRequired) {
-                    if (!parsedElmtsByPathLC.containsKey(matchElmt.path.toLowerCase())) {
+                    if (!parsedElmtsByPathLC.containsKey(matchElmt.path.toLowerCase())) {                    
                         throwViolation('Required match term "' + matchElmt.path + '" is not present');
                     }
                 }
@@ -709,7 +723,21 @@ global class SOQLContext {
                 Boolean isTop = false;
                 Boolean isTopAND = false;
                 Boolean allParentsAND = true;
-                for (ASTCond parent : parents()) {
+                ASTCond[] filteredParents = parents().clone();
+                // Remove any redundant groupings at the top levels:
+                Integer top = filteredParents.size() - 1;
+                while (top >= 0) {
+                    if (filteredParents[top].isGroup()) {
+                        filteredParents.remove(top--);
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+                if (filteredParents.size() == 0) {
+                    isTop = true;
+                } else {
+                    for (ASTCond parent : filteredParents) { //parents()) {
                     //// Extra groupings don't change our structure analysis:
                     //if (parent.isGroup()) {
                     //    continue;
@@ -735,6 +763,7 @@ global class SOQLContext {
                         }
                     }
                     //}
+                    }
                 }
     
                 SOQLParser.ASTSimpleCond simpleCond = (SOQLParser.ASTSimpleCond) cond;
@@ -799,6 +828,10 @@ global class SOQLContext {
             if (minimumMatches != null) {
                 return minimumMatches;
             }
+            // TODO: relaxing the minimum matches logic for now - it may be bypassed by setting to 0 
+            // or null (defaults to 0):
+            return 0;
+            /*
             Integer effectiveMin = 0;
             for (ExactMatchElmt matchElmt : matchElmtsByPathLC.values()) {
                 if (matchElmt.isRequired) {
@@ -809,6 +842,7 @@ global class SOQLContext {
                 effectiveMin = matchElmtsByPathLC.keySet().size();
             }
             return effectiveMin;
+            */
         }
     
         global EnforceSearchTermsVisitor setMinimumMatches(Integer minMatches) {
@@ -881,6 +915,7 @@ global class SOQLContext {
 
     global class RuleViolationException extends Exception {
         global QueryRule rule;
+        global String originalMessage;
     }
     
     global class MetadataRuleUndefinedException extends Exception {
@@ -893,6 +928,13 @@ global class SOQLContext {
         RuleViolationException err = new RuleViolationException(fullMessage);
         err.setMessage(fullMessage);
         err.rule = rule;
+        throw err;
+    }
+
+    global static void configError(String fullMessage) {
+        RuleConfigurationException err = new RuleConfigurationException(fullMessage);
+        err.setMessage(fullMessage);
+        //err.rule = rule;
         throw err;
     }
     
@@ -923,6 +965,8 @@ global class SOQLContext {
         public String header;
         public QueryRuleSet parent;
         public Boolean initialized = false;
+        // Custom message to display for Rule Violations - this should only be set on the root rule set:
+        public String customMessage;
     
         // The following are utilized only by root rules:
         public MetadataRule[] registeredMetadata = new MetadataRule[]{};
@@ -1003,7 +1047,7 @@ global class SOQLContext {
                         targetNames.add(mrule.targetName);
                     }
                     Restricted_Search__mdt[] candidateRows = [ 
-                        SELECT MasterLabel, DeveloperName, Object_Type__r.QualifiedApiName, Target__c, Query_Mode__c, 
+                        SELECT MasterLabel, DeveloperName, Object_Type__r.QualifiedApiName, Query_Mode__c, 
                             User_Scope__c, Object_Type__c, Minimum_Matches__c
                         FROM Restricted_Search__mdt 
                         WHERE Object_Type__r.QualifiedApiName = :targetObjectApi
@@ -1265,8 +1309,8 @@ global class SOQLContext {
                     if (metaRow.Minimum_Matches__c != null) {
                         termsVisitor.setMinimumMatches(minMatches = metaRow.Minimum_Matches__c.intValue());
                     }
-                    if (minMatches == null || minMatches < 1) {
-                        configError(this, 'Minimum matches must be set to a positive integer');
+                    if (minMatches < 0) {
+                        configError(this, 'Minimum matches must be set to a non-negative integer');
                     }
                     for (Restricted_Search_Field__mdt fieldRow : metaFieldRows) {
                         // Add field-level rules via SOQLContext.addExactMatchElement() and/or .addFreestyleElement():
@@ -1343,6 +1387,12 @@ global class SOQLContext {
                 return true;
             }
             return false;
+        }
+
+        // Custom message to display for Rule Violations - this should only be set on the root rule set:
+        global QueryRule setCustomMessage(String msg) {
+            this.customMessage = msg;
+            return this;
         }
     
         global QueryRuleSet matchAny() {

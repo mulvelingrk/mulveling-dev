@@ -299,7 +299,7 @@ public with sharing class RKSecurity {
             return null; // unreachable
         }
     }
-	@TestVisible
+    @TestVisible
     static void bindTypeInvalidErr(Integer badBindType) {
         throw new AuraHandledException('Binding type ' + badBindType + ' is invalid');
     }
@@ -452,7 +452,7 @@ public with sharing class RKSecurity {
         public sObject[] doSafeUpdate() {
             sObject[] results = new sObject[]{};
             sObject[] dmls = new sObject[]{};
-			// CRUD/FLS security violations:
+            // CRUD/FLS security violations:
             resetSecurityLog(true);
             for (DeserObj obj : this.objs) {
                 sObject sobj;
@@ -1015,7 +1015,7 @@ public with sharing class RKSecurity {
         NumberProp(DeserObj obj, String srcKey, Schema.DescribeFieldResult fieldDesc, Integer priority, Object srcVal) {
             super(obj, srcKey, fieldDesc, priority, srcVal);
         }
-		@TestVisible
+        @TestVisible
         override Object destVal() {
             String floatErr;
             if (srcVal == null) {
@@ -1803,6 +1803,13 @@ public with sharing class RKSecurity {
             }
         }
         return null;
+    }
+    
+    public static PathPart getPathMeta(Schema.sObjectType rootType, String rawPath) {
+        String[] rawPathParts = rawPath.split('\\.');
+        PathPart headPart = new PathPart(rootType); //Schema.Questionnaire_Form__c.sObjectType);
+        resolvePathBranch(headPart, rawPathParts, 0);
+        return headPart;
     }
 
     public static PathPart getPathMeta(String rawPath, String sobjectName) {  //RKDEV-34816
@@ -3027,7 +3034,7 @@ public with sharing class RKSecurity {
     
     // RKDEV-10354 - MDU: Validation failure messaging:
     // "Cannot{OP} option{ROW}:{MSG}", where MSG is either custom validation text or "Value required for{FIELDS}"
-    static void handleDMLError(DMLException err, String dmlOp) {
+    public static void handleDMLError(DMLException err, String dmlOp) {
         Integer unhandledRows = 0;
         String[] rowLabels = new String[err.getNumDML()];
         if (DMLRowLabelStrat != null) {
@@ -3234,7 +3241,7 @@ public with sharing class RKSecurity {
                         logSecurityMiss(sobjType, ACCESS_DELETE);
                     }
                 }
-               	if (safeObjs.size() > 0) {
+                if (safeObjs.size() > 0) {
                     try {
                         //delete safeObjs;
                         (systemModeOneTime == true ? SystemSharingModel : SafeSharingModel).doDelete(safeObjs);
@@ -3497,11 +3504,11 @@ public with sharing class RKSecurity {
         return res;
     }
     
-    private static Map<String, Object> filterSObject(Vobj.SchemaDesc V, SObject record, Id[] refStack) {
+    public static Map<String, Object> filterSObject(Vobj.SchemaDesc V, SObject record, Id[] refStack) {
         return filterSObject(V, record, refStack, null);
     }
     
-    private static Map<String, Object> filterSObject(Vobj.SchemaDesc V, SObject record, Id[] refStack, RKSecurity.DataMirrorMode dataMirrorMode) {
+    public static Map<String, Object> filterSObject(Vobj.SchemaDesc V, SObject record, Id[] refStack, RKSecurity.DataMirrorMode dataMirrorMode) {
         if (record.Id != null) {
             Integer refRepCount = 0;
             for (Id refId : refStack) {
@@ -3557,14 +3564,23 @@ public with sharing class RKSecurity {
                 Boolean pkgUnqualifiedOnly = false;
                 if (fieldValue instanceof List<SObject>) {
                     // First step, attempt to retrieve the ChildRel definition via direct matching
-                    Schema.ChildRelationship childRel = resolveChildRel(record.getSObjectType(), fieldName);
+                    // Schema.ChildRelationship childRel = resolveChildRel(record.getSObjectType(), fieldName);
+                    Schema.ChildRelationship childRel = DescribeHandler.getChildRelationship(String.valueOf(record.getSObjectType()), fieldName);
 
                     // Second step, check if there is a matching child rel definition on the target record that resides under
                     // the masking namespace
-                    if (checkPackageMaskingEntity != null && resolveChildRel(record.getSObjectType(), checkPackageMaskingEntity) != null) {
+                    // if (checkPackageMaskingEntity != null && resolveChildRel(record.getSObjectType(), checkPackageMaskingEntity) != null) {
+                    //     continue;
+                    // }
+                    if (checkPackageMaskingEntity != null &&
+                        DescribeHandler.getChildRelationship(String.valueOf(record.getSObjectType()), checkPackageMaskingEntity) != null
+                    ) {
                         continue;
                     }
 
+                    System.debug('childRel is:'+childRel);
+                    System.debug('record.getSObjectType is:'+record.getSObjectType());
+                    System.debug('fieldName is:'+fieldName);
                     // Check for read access on related object
                     if (!ReadChecker.checkCRUD(childRel.getChildSObject())) {
                         continue;
@@ -3688,6 +3704,17 @@ public with sharing class RKSecurity {
             }
         }
         return filteredRecords;
+    }
+    
+    public static List<Map<String, Object>> filterSObject(Vobj.SchemaDesc V, SObject[] records) {
+        resetSecurityLog(true);
+        List<Map<String, Object>> res = filterSObject(V, records, new Id[]{});
+        throwSecurityViolations(true);
+        return res;
+    }
+    
+    private static List<Map<String, Object>> filterSObject(Vobj.SchemaDesc V, SObject[] records, Id[] refStack) {
+        return filterSObject(V, records, refStack, null);
     }
     //End: Raghil
 }

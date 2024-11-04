@@ -1,5 +1,8 @@
 @IsTest 
 private class SOQLParserTest {
+    static String PkgNamespace = RKSecurity.getPackageNamespace();
+    static String PkgPrefixDot = String.isBlank(PkgNamespace) || PkgNamespace == 'c' ? '' : PkgNamespace + '.';
+
     @IsTest
     private static void testLexerTypes() {
         SOQLContext ctxt = SOQLContext.newSystemMode();
@@ -270,7 +273,7 @@ private class SOQLParserTest {
         //    caughtType = 'Type';
         //}
         Assert.isNotNull(error, 'Expected QueryException' + (reason != null ? ' because: ' + reason : ''));
-        Assert.areEqual('SOQLParser.' + causeType, cause != null ? cause.getTypeName() : error.getTypeName());
+        Assert.areEqual(PkgPrefixDot + 'SOQLParser.' + causeType, cause != null ? cause.getTypeName() : error.getTypeName());
     }
 }
 

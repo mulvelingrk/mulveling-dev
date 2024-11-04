@@ -915,7 +915,7 @@ global class SOQLParser {
                     addSelectableEntity(altLexer, new SOQLLexer.Token[]{ starToken }, func, nestedFunc);
                 
                 // Nested queries start with an open-parenthesis:
-                } if (peek == SOQLLexer.OPEN_PAREN) {
+                } else if (peek == SOQLLexer.OPEN_PAREN) {
                     lex.next++; // consume and discard open-paren
                     peek = toks[lex.next].ttype;
                     if (peek != SOQLLexer.KW_SELECT && peek != SOQLLexer.KW_FROM) {
